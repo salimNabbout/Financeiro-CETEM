@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#0f172a" />
+  <title>Gerência Financeira</title>
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="icon" type="image/png" href="icons/logo-cetem.png" />
+  <link rel="apple-touch-icon" href="icons/logo-cetem.png" />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <link rel="stylesheet" href="css/styles.css" />
+</head>
+<body class="bg-slate-50 text-slate-800">
+  <div class="flex min-h-screen">
+    <button id="btn-menu" class="md:hidden fixed top-3 left-3 z-40 bg-slate-900 text-white rounded p-2" aria-label="Abrir menu">☰</button>
+    <aside id="sidebar" class="w-56 bg-slate-900 text-slate-100 flex flex-col fixed md:static inset-y-0 left-0 z-30 transform -translate-x-full md:translate-x-0 transition-transform">
+      <div class="p-4 border-b border-slate-700 space-y-2">
+        <div class="flex items-center justify-between">
+          <div class="flex items-center gap-2">
+            <img src="icons/logo-cetem.png" alt="CETEM" class="h-10 w-auto" />
+            <div class="text-sm font-semibold leading-tight">GERÊNCIA<br>FINANCEIRA</div>
+          </div>
+          <button id="btn-close-menu" class="md:hidden text-slate-300 text-xl" aria-label="Fechar">×</button>
+        </div>
+        <select id="sel-empresa" class="w-full bg-slate-800 text-slate-100 text-xs rounded px-2 py-1 border border-slate-700"></select>
+        <select id="sel-perfil" class="w-full bg-slate-800 text-slate-100 text-xs rounded px-2 py-1 border border-slate-700"></select>
+      </div>
+      <nav id="nav" class="flex-1 p-2 space-y-1 text-sm overflow-y-auto"></nav>
+      <div class="p-3 text-xs text-slate-400 border-t border-slate-700">
+        <div id="empresa-nome">—</div>
+        <div class="mt-1 flex items-center justify-between">
+          <span>v0.3</span>
+          <span id="online-badge" class="badge badge-g">offline?</span>
+        </div>
+      </div>
+    </aside>
+    <main class="flex-1 p-4 md:p-6 overflow-x-hidden w-full">
+      <div class="print-only mb-4 pb-2 border-b-2 border-black">
+        <div class="text-xs uppercase tracking-wider">Cockpit Financeiro</div>
+        <div id="print-empresa" class="text-lg font-semibold"></div>
+        <div id="print-data" class="text-xs"></div>
+      </div>
+      <header class="flex items-center justify-between mb-6 gap-2 flex-wrap">
+        <div class="ml-10 md:ml-0">
+          <h1 id="page-title" class="text-2xl font-bold">Dashboard</h1>
+          <p id="page-sub" class="text-sm text-slate-500">Visão executiva do caixa, margem e alertas.</p>
+        </div>
+        <div class="flex gap-2 flex-wrap no-print">
+          <button id="btn-search" class="px-3 py-2 bg-white border border-slate-300 rounded text-sm hover:bg-slate-100" title="Ctrl+K">🔍 Buscar</button>
+          <button id="btn-theme" class="px-3 py-2 bg-white border border-slate-300 rounded text-sm hover:bg-slate-100" title="Alternar entre claro e escuro"><span id="theme-label">🌙 Escuro</span></button>
+          <button id="btn-print" class="px-3 py-2 bg-white border border-slate-300 rounded text-sm hover:bg-slate-100">Imprimir</button>
+          <button id="btn-snapshot" class="px-3 py-2 bg-white border border-slate-300 rounded text-sm hover:bg-slate-100">Snapshot</button>
+          <button id="btn-export" class="px-3 py-2 bg-white border border-slate-300 rounded text-sm hover:bg-slate-100">Exportar</button>
+          <label class="px-3 py-2 bg-white border border-slate-300 rounded text-sm cursor-pointer hover:bg-slate-100">
+            Importar
+            <input id="file-import" type="file" accept="application/json" class="hidden"/>
+          </label>
+          <button id="btn-reset" class="px-3 py-2 bg-white border border-slate-300 rounded text-sm hover:bg-slate-100">Zerar</button>
+        </div>
+      </header>
+      <section id="view" class="space-y-6"></section>
+    </main>
+    <div id="sidebar-overlay" class="md:hidden fixed inset-0 bg-black/40 z-20 hidden"></div>
+  </div>
+
+  <div id="modal-root"></div>
+
+  <script src="js/db.js"></script>
+  <script src="js/kpis.js"></script>
+  <script src="js/ui.js"></script>
+  <script src="js/reports.js"></script>
+  <script src="js/ofx.js"></script>
+  <script src="js/impostos.js"></script>
+  <script src="js/pix.js"></script>
+  <script src="js/views.js"></script>
+  <script src="js/app.js"></script>
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
+    }
+    const onlineBadge = document.getElementById('online-badge');
+    const setOnline = () => { onlineBadge.textContent = navigator.onLine ? 'online' : 'offline'; onlineBadge.className = 'badge ' + (navigator.onLine ? 'badge-v' : 'badge-a'); };
+    window.addEventListener('online', setOnline); window.addEventListener('offline', setOnline); setOnline();
+
+    const sb = document.getElementById('sidebar'), ov = document.getElementById('sidebar-overlay');
+    const toggle = (show) => { sb.classList.toggle('-translate-x-full', !show); ov.classList.toggle('hidden', !show); };
+    document.getElementById('btn-menu').onclick = () => toggle(true);
+    document.getElementById('btn-close-menu').onclick = () => toggle(false);
+    ov.onclick = () => toggle(false);
+  </script>
+</body>
+</html>
