@@ -1,13 +1,20 @@
 // ============================================================
-// Configuracao do cliente Supabase — projeto CETEM-Finance
+// Configuracao do cliente Supabase
 // ============================================================
-// Estas chaves sao seguras para client-side desde que RLS esteja
-// configurado corretamente no banco. Trocar por env vars / build-time
-// substitution quando migrar para pipeline de deploy maduro.
+// Projeto: financeiro-cetem-v05 (tlhiolvybkmruxzikmyj)
+// Schema: tabela unica `empresas` com state em JSONB (modelo
+//         drop-in do localStorage do app v0.5).
+//
+// O projeto CETEM-Finance (mmjfduvnejewluvqwkol) tem schema
+// normalizado proprio (RBAC, plano de contas, conciliacao
+// bancaria) e fica reservado para a versao "ERP" futura,
+// que tera frontend dedicado e queries normalizadas.
+// Nao misturar os dois enquanto o desenho final nao estiver
+// fechado.
 // ============================================================
 
-window.SUPABASE_URL = 'https://mmjfduvnejewluvqwkol.supabase.co';
-window.SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1tamZkdXZuZWpld2x1dnF3a29sIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzcyNTA1OTQsImV4cCI6MjA5MjgyNjU5NH0.Vu8miLDBpRluQ20-TyYAIKN0eAVned_xNGnc8F_IrbQ';
+window.SUPABASE_URL = 'https://tlhiolvybkmruxzikmyj.supabase.co';
+window.SUPABASE_KEY = 'sb_publishable_urg2_W3KZlS5A9z80conQA_Ou_NobYm';
 
 // Flag global para o app saber qual backend esta ativo
 window.DB_BACKEND = 'supabase';
