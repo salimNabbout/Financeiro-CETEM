@@ -321,40 +321,9 @@
     }
   })();
 
-  (function seed() {
-    const st = DB.get();
-    if (st.clientes.length || st.fornecedores.length || st.movimentos.length) return;
-    DB.set(s => {
-      s.empresa.nome = 'CETEM Engenharia';
-      s.empresa.caixaInicial = 25000;
-      s.parametros.custosFixosMensais = 18000;
-      s.parametros.vendasMediaDiaria = 2500;
-      s.parametros.estoqueAtual = 15000;
-      const c1 = { id: DB.id(), nome: 'Cliente Alfa', documento: '11.111.111/0001-11', limite: 20000, prazo: 30, rating: 'bom' };
-      const c2 = { id: DB.id(), nome: 'Cliente Beta',  documento: '22.222.222/0001-22', limite: 10000, prazo: 30, rating: 'atencao' };
-      s.clientes.push(c1, c2);
-      const f1 = { id: DB.id(), nome: 'Fornecedor Gama', categoria: 'Insumos', condicao: '30d', criticidade: 'critico' };
-      const f2 = { id: DB.id(), nome: 'Locadora Delta',  categoria: 'Aluguel',  condicao: 'mensal', criticidade: 'critico' };
-      s.fornecedores.push(f1, f2);
-      const d = (off) => new Date(Date.now() + off * 86400000).toISOString().slice(0, 10);
-      s.titulosReceber.push(
-        { id: DB.id(), clienteId: c1.id, documento: 'NF-001', emissao: d(-20), vencimento: d(5),  valor: 8500, valorRecebido: 0, status: 'aberto' },
-        { id: DB.id(), clienteId: c2.id, documento: 'NF-002', emissao: d(-40), vencimento: d(-10), valor: 4200, valorRecebido: 0, status: 'aberto' }
-      );
-      s.titulosPagar.push(
-        { id: DB.id(), fornecedorId: f1.id, documento: 'FAT-100', competencia: d(-10), vencimento: d(3), valor: 6200, categoria: 'Fornecedores', prioridade: 'obrigatorio', pago: false },
-        { id: DB.id(), fornecedorId: f2.id, documento: 'ALU-03',  competencia: d(-5),  vencimento: d(7), valor: 4500, categoria: 'Aluguel',      prioridade: 'obrigatorio', pago: false }
-      );
-      s.produtos.push(
-        { id: DB.id(), nome: 'Produto A', preco: 150, imposto: 12, custoVariavel: 70, comissao: 5, volume: 200 },
-        { id: DB.id(), nome: 'Serviço B', preco: 400, imposto: 8,  custoVariavel: 120, comissao: 0, volume: 40 }
-      );
-      s.movimentos.push(
-        { id: DB.id(), data: d(-2), descricao: 'Venda balcão', categoria: 'Vendas',     tipo: 'entrada', natureza: 'op', status: 'realizado', valor: 3200, origem: 'manual' },
-        { id: DB.id(), data: d(-1), descricao: 'Tarifas banco', categoria: 'Outros',     tipo: 'saida',   natureza: 'op', status: 'realizado', valor: 180,  origem: 'manual' }
-      );
-    });
-  })();
+  // Seed removido em 2026-05-04: causava sobrescrita de dados em
+  // ambientes multi-usuario com Supabase. Quando uma empresa nova
+  // for criada, o usuario popula manualmente (ou importa CSV).
 
   go();
 })();
