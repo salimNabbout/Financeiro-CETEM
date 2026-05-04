@@ -3,6 +3,8 @@
     { id: 'dashboard', label: 'Dashboard', icon: '📊', sub: 'Visão executiva do caixa, margem e alertas.', render: Views.dashboard },
     { id: 'caixa',     label: 'Fluxo de caixa', icon: '💵', sub: 'Entradas e saídas realizadas e previstas.', render: Views.fluxoCaixa },
     { id: 'contas',    label: 'Contas', icon: '🏧', sub: 'Bancos, caixas e saldos por conta.', render: Views.contas },
+    { id: 'clientes',  label: 'Clientes', icon: '👥', sub: 'Cadastro de clientes — buscar, editar, exportar.', render: Views.clientes },
+    { id: 'fornecedores', label: 'Fornecedores', icon: '🏭', sub: 'Cadastro de fornecedores — buscar, editar, exportar.', render: Views.fornecedores },
     { id: 'receber',   label: 'Contas a receber', icon: '📥', sub: 'Títulos, vencimentos, atrasos e aging.', render: Views.receber },
     { id: 'pagar',     label: 'Contas a pagar', icon: '📤', sub: 'Obrigações, prioridade e calendário.', render: Views.pagar },
     { id: 'regua',     label: 'Régua de cobrança', icon: '📣', sub: 'Ações sugeridas por faixa de atraso.', render: Views.regua },
@@ -16,6 +18,8 @@
     { id: 'conciliacao', label: 'Conciliação bancária', icon: '🏦', sub: 'Importar extrato OFX/CSV e casar com previstos.', render: Views.conciliacao },
     { id: 'relatorios', label: 'Relatórios', icon: '📑', sub: 'Exportações CSV e resumo mensal.', render: Views.relatorios },
     { id: 'snapshots', label: 'Backups', icon: '💾', sub: 'Backups locais com restauração.', render: Views.snapshots },
+    { id: 'importBase', label: 'Importar base', icon: '📥', sub: 'Mesclar arquivo JSON de clientes e fornecedores.', render: Views.importBase },
+    { id: 'importNFSe', label: 'Importar NFS-e', icon: '🧾', sub: 'Importar XMLs de NFS-e da Nota Carioca (Prefeitura do Rio).', render: Views.importNFSe },
     { id: 'config',    label: 'Configurações', icon: '⚙️', sub: 'Parâmetros financeiros e empresa.', render: Views.config }
   ];
 
@@ -53,6 +57,7 @@
       document.getElementById('view').innerHTML = `<div class="card"><strong>Acesso negado.</strong><div class="text-sm text-slate-500 mt-2">O perfil <b>${DB.getPerfil()}</b> não tem permissão para esta área.</div></div>`;
       return;
     }
+    if (DB.registrarUso) DB.registrarUso(r.id);
     r.render(DB.get());
   }
 
@@ -93,16 +98,46 @@
     const f = e.target.files[0]; if (!f) return;
     const r = new FileReader();
     r.onload = () => {
-      try {
-        const data = JSON.parse(r.result);
-        if (confirm('Substituir todos os dados atuais?')) { DB.replace(data); go(); }
-      } catch { alert('Arquivo inválido.'); }
+      let data;
+      try { data = JSON.parse(r.result); }
+      catch { UI.toast('Arquivo JSON malformado.', 'r'); return; }
+      const nomeEmp = (DB.get().empresa && DB.get().empresa.nome) || 'esta empresa';
+      UI.confirmarCritico({
+        titulo: 'Substituir todos os dados?',
+        mensagem: 'Isto vai substituir TODOS os dados atuais de "' + nomeEmp + '" pelos dados do arquivo. Um snapshot automático será criado antes como segurança.',
+        confirmacao: 'SUBSTITUIR',
+        labelBotao: 'Substituir'
+      }, () => {
+        DB.snapshot('pre-import');
+        const r2 = DB.importar(data, f.name);
+        if (!r2.ok) { UI.toast('Import rejeitado: ' + r2.erro, 'r'); return; }
+        UI.toast('Dados importados com sucesso. Snapshot pré-import salvo.', 'v');
+        go();
+      });
     };
     r.readAsText(f);
   };
 
   document.getElementById('btn-reset').onclick = () => {
-    if (confirm('Zerar todos os dados locais? Esta ação é irreversível.')) { DB.reset(); go(); }
+    // Guarda defensivo: apenas admin pode zerar (mesmo que esconda o botao,
+    // alguem poderia clicar via DevTools).
+    if (!window.IS_ADMIN) {
+      UI.toast('Apenas administradores podem zerar a base.', 'r');
+      return;
+    }
+    const nomeEmp = (DB.get().empresa && DB.get().empresa.nome) || 'Empresa';
+    UI.confirmarCritico({
+      titulo: 'Zerar todos os dados',
+      mensagem: 'Esta ação apaga permanentemente todos os lançamentos, títulos, clientes e fornecedores da empresa "' + nomeEmp + '". Um snapshot automático será criado antes.',
+      confirmacao: 'ZERAR ' + nomeEmp,
+      labelBotao: 'Zerar tudo'
+    }, () => {
+      DB.snapshot('pre-reset');
+      DB.reset();
+      DB.log('reset', 'zerado via UI (pós confirmação em 2 etapas)');
+      UI.toast('Dados zerados. Snapshot pré-reset salvo.', 'v');
+      go();
+    });
   };
 
   document.getElementById('btn-export').addEventListener('click', () => DB.log('export', 'backup completo JSON'));
@@ -112,33 +147,25 @@
     setTimeout(() => window.print(), 150);
   };
 
-  document.getElementById('btn-snapshot').onclick = () => { DB.snapshot('manual'); DB.log('snapshot-manual', 'criado via botão'); alert('Snapshot salvo.'); };
+  document.getElementById('btn-snapshot').onclick = () => { DB.snapshot('manual'); DB.log('snapshot-manual', 'criado via botão'); UI.toast('Snapshot salvo.', 'v'); };
 
-  // Notificações do navegador para alertas críticos (1x por dia, só vermelhos)
-  (function notifica() {
-    if (!('Notification' in window)) return;
-    const perm = Notification.permission;
-    const req = () => {
-      if (perm === 'default') Notification.requestPermission().then(p => { if (p === 'granted') enviar(); });
-      else if (perm === 'granted') enviar();
-    };
-    function enviar() {
-      const k = 'cockpit-fin-last-notify:' + DB.empresaAtivaId();
-      const hoje = KPI.today();
-      if (localStorage.getItem(k) === hoje) return;
-      const criticos = KPI.alertas(DB.get()).filter(a => a.sev === 'r');
-      if (!criticos.length) return;
-      try {
-        new Notification(`⚠ ${criticos.length} alerta(s) crítico(s) — ${DB.get().empresa.nome}`, {
-          body: criticos.map(a => '• ' + a.msg).join('\n'),
-          icon: 'icons/icon-192.svg',
-          tag: 'cockpit-alerta-' + hoje
-        });
-        localStorage.setItem(k, hoje);
-      } catch {}
+  // Eventos de hardening Fase A
+  window.addEventListener('cockpit-fin-concurrent-tab', () => {
+    UI.toast('⚠ App aberto em outra aba. Evite editar nas duas — pode causar perda de dados.', 'a');
+  });
+  window.addEventListener('cockpit-fin-quota-exceeded', () => {
+    UI.toast('⚠ Espaço de armazenamento cheio. Remova anexos grandes ou exporte e zere dados antigos.', 'r');
+  });
+  // Aviso de quota próxima do limite (checagem na inicialização)
+  if (DB.checarQuota) DB.checarQuota().then(q => {
+    if (q && q.alerta) {
+      UI.toast('⚠ Armazenamento local em ' + (q.pct*100).toFixed(0) + '% de uso. Exporte backup e considere limpar dados antigos.', 'a');
     }
-    setTimeout(req, 2000);
-  })();
+  });
+
+  // Notificacoes do navegador desativadas no boot.
+  // Geravam o pop-up "Permitir notificacoes?" toda primeira abertura.
+  // Se quisermos religar, deve ser apenas apos o usuario clicar em "Ativar alertas".
 
   // Dark mode persistente
   (function theme() {
@@ -203,6 +230,17 @@
   // Atalhos globais: Ctrl+K (busca), "g" + letra para navegar rapidamente
   let awaitingGo = false, goTimer = null;
   const goMap = { d: 'dashboard', f: 'caixa', r: 'receber', p: 'pagar', m: 'margem', c: 'calendario', o: 'orcamento', x: 'dre', t: 'metas', l: 'relatorios', n: 'conciliacao', b: 'cobrancaLote' };
+  // Telemetria de uso (v0.5 uso interno): g u exporta CSV de visitas por rota.
+  function exportarTelemetriaUso() {
+    if (!DB.exportarUso) { UI.toast('Telemetria indisponível.', 'r'); return; }
+    const csv = DB.exportarUso();
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `telemetria-uso-${new Date().toISOString().slice(0,10)}.csv`;
+    a.click();
+    UI.toast('Telemetria exportada.', 'v');
+  }
   document.addEventListener('keydown', e => {
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); openPalette(); return; }
     const tag = (e.target.tagName || '').toLowerCase();
@@ -213,13 +251,18 @@
       goTimer = setTimeout(() => { awaitingGo = false; }, 1500);
       return;
     }
+    if (awaitingGo && e.key.toLowerCase() === 'u') {
+      awaitingGo = false; clearTimeout(goTimer);
+      exportarTelemetriaUso();
+      return;
+    }
     if (awaitingGo && goMap[e.key.toLowerCase()]) {
       awaitingGo = false;
       clearTimeout(goTimer);
       current = goMap[e.key.toLowerCase()]; go();
     }
     if (e.key === '?' && !awaitingGo) {
-      alert('Atalhos:\nCtrl+K  Busca global\ng d  Dashboard\ng f  Fluxo de caixa\ng r  Receber\ng p  Pagar\ng b  Cobrança em lote\ng m  Margem\ng c  Calendário\ng o  Orçamento\ng x  DRE\ng t  Metas\ng l  Relatórios\ng n  Conciliação');
+      alert('Atalhos:\nCtrl+K  Busca global\ng d  Dashboard\ng f  Fluxo de caixa\ng r  Receber\ng p  Pagar\ng b  Cobrança em lote\ng m  Margem\ng c  Calendário\ng o  Orçamento\ng x  DRE\ng t  Metas\ng l  Relatórios\ng n  Conciliação\ng u  Exportar telemetria de uso (CSV)');
     }
   });
 
@@ -254,10 +297,8 @@
     if (gerou) DB.log('recorrencias', `${gerou} lançamentos gerados`);
   })();
 
-  // Onboarding na primeira abertura de uma empresa não configurada
-  (function autoOnboarding() {
-    if (!DB.get().onboardingConcluido) setTimeout(() => Views.onboarding(), 500);
-  })();
+  // Onboarding desativado: era um pop-up automatico no boot.
+  // Usuario que precisar pode acessar manualmente via Configuracoes.
 
   // Backup diário automático (primeiro uso do dia cria snapshot 'auto-diario')
   (function autoSnapshot() {
@@ -270,11 +311,21 @@
   })();
 
   // Seed demo data na primeira abertura vazia
+  // Migracao: empresas com nome "Empresa Demo" ou "Minha Empresa" sao renomeadas
+  // para "CETEM Engenharia" automaticamente (uma vez).
+  (function migrarNomeDefault() {
+    const st = DB.get();
+    const nome = (st.empresa && st.empresa.nome) || '';
+    if (nome === 'Empresa Demo' || nome === 'Minha Empresa') {
+      DB.renameEmpresa(DB.empresaAtivaId(), 'CETEM Engenharia');
+    }
+  })();
+
   (function seed() {
     const st = DB.get();
     if (st.clientes.length || st.fornecedores.length || st.movimentos.length) return;
     DB.set(s => {
-      s.empresa.nome = 'Empresa Demo';
+      s.empresa.nome = 'CETEM Engenharia';
       s.empresa.caixaInicial = 25000;
       s.parametros.custosFixosMensais = 18000;
       s.parametros.vendasMediaDiaria = 2500;

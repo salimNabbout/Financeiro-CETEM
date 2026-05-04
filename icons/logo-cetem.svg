@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 440" role="img" aria-label="CETEM Automacao">
+  <!-- Anel cinza claro fino, levemente inclinado -->
+  <ellipse cx="300" cy="225" rx="265" ry="125"
+           fill="none" stroke="#d1d5db" stroke-width="6"
+           transform="rotate(-10 300 225)"/>
+
+  <!-- Curva vermelha superior -->
+  <path d="M 65 260 C 90 70, 360 60, 545 100"
+        fill="none" stroke="#dc2626" stroke-width="24" stroke-linecap="round"/>
+
+  <!-- Curva vermelha inferior -->
+  <path d="M 75 220 C 95 385, 360 420, 540 355"
+        fill="none" stroke="#dc2626" stroke-width="24" stroke-linecap="round"/>
+
+  <!-- Texto CETEM em branco -->
+  <text x="300" y="252"
+        font-family="'Arial Black', 'Helvetica Neue', Helvetica, Arial, sans-serif"
+        font-weight="900" font-size="118" letter-spacing="3"
+        fill="#ffffff" text-anchor="middle">CETEM</text>
+
+  <!-- Subtítulo Automação em vermelho -->
+  <text x="300" y="298"
+        font-family="Arial, Helvetica, sans-serif"
+        font-weight="500" font-size="30" letter-spacing="6"
+        fill="#dc2626" text-anchor="middle">Automação</text>
+</svg>

@@ -1,58 +1,47 @@
 # Gerência Financeira — CETEM
 
-Web app de gestão financeira para empresa de pequeno porte. PWA offline-first construído em HTML + JS + CSS puro, sem build step, com persistência em `localStorage`.
+Cockpit financeiro web (PWA) com backend Supabase.
 
-## Rodar localmente
+## Hospedagem
 
-Requer apenas um servidor HTTP estático (SW e algumas APIs não funcionam via `file://`).
+Deploy automático via Netlify a partir do branch `main` deste repositório.
 
-```bash
-python -m http.server 8080
-```
+URL: https://cetem-financeiro.netlify.app/
 
-Abra `http://localhost:8080` no Chrome/Edge.
+## Versão atual
+
+**v0.5 · Uso interno** — Backend Supabase, autenticação por e-mail, validações fortes, cancelamento lógico, trilha de auditoria append-only.
 
 ## Estrutura
 
 ```
 app/
-├── index.html           # shell único
-├── manifest.webmanifest # PWA
-├── sw.js                # service worker (offline)
-├── css/styles.css       # tema claro + escuro
-├── js/
-│   ├── db.js            # persistência multi-empresa (localStorage)
-│   ├── kpis.js          # cálculos financeiros
-│   ├── ui.js            # helpers de render
-│   ├── reports.js       # import/export CSV
-│   ├── ofx.js           # parser de extrato OFX
-│   ├── impostos.js      # Simples Nacional / Lucro Presumido
-│   ├── pix.js           # gerador BR Code PIX
-│   ├── views.js         # telas
-│   └── app.js           # rotas e bootstrap
-└── icons/
+├── index.html               # shell único + bootstrap async
+├── manifest.webmanifest     # PWA
+├── sw.js                    # service worker (kill-switch em modo dev)
+├── css/styles.css           # tema claro + escuro
+├── netlify.toml             # config Netlify
+└── js/
+    ├── supabase_config.js   # URL e anon key (públicas, RLS no Supabase)
+    ├── supabase_client.js   # cliente do SDK
+    ├── auth.js              # tela de login + sessão
+    ├── db_supabase.js       # persistência (substitui localStorage)
+    ├── kpis.js              # cálculos financeiros
+    ├── ui.js                # helpers de render (modal, toast, esc)
+    ├── reports.js           # CSV in/out, BOM UTF-8
+    ├── validators.js        # CPF/CNPJ DV, e-mail, telefone E.164, datas
+    ├── ofx.js               # parser de extrato bancário
+    ├── impostos.js          # (módulo desativado nesta versão)
+    ├── pix.js               # gerador BR Code PIX
+    ├── views.js             # telas
+    └── app.js               # rotas e bootstrap
 ```
 
-## Funcionalidades (núcleo essencial)
+## Permissões
 
-- Dashboard com KPIs semafóricos, alertas e projeção de caixa 60 dias
-- Fluxo de caixa (realizado + previsto) com filtros e tags
-- Contas bancárias / caixas com saldos independentes
-- Contas a receber com aging, PIX copia-e-cola + QR Code, anexos (boleto/NF)
-- Contas a pagar com prioridade, anexos, recibo de pagamento
-- Régua de cobrança configurável
-- Cobrança em lote via WhatsApp / e-mail com PIX embutido
-- Calendário mensal de vencimentos
-- Margem de contribuição e ponto de equilíbrio
-- DRE gerencial mensal
-- Orçamento por categoria (budget vs. realizado)
-- Metas & forecast mensal
-- Recorrências (aluguel, folha, assinaturas)
-- Conciliação bancária (OFX/CSV)
-- Relatórios CSV
-- Backups locais (snapshots) + export JSON
-- Onboarding guiado, dark mode, busca Ctrl+K, PWA instalável
+A lista de admins fica em `js/supabase_config.js → window.ADMIN_EMAILS`.
+Apenas admins veem botões destrutivos (Zerar, Importar JSON full).
 
-## Dados
+## Suporte
 
-Tudo local no navegador (`localStorage`). Cada empresa tem seus próprios dados isolados. Use **Exportar** para backup manual em JSON e **Snapshots** para backups automáticos diários.
+Engenharia CETEM.

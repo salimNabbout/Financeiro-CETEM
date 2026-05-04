@@ -6,11 +6,13 @@
   <meta name="theme-color" content="#0f172a" />
   <title>Gerência Financeira</title>
   <link rel="manifest" href="manifest.webmanifest" />
-  <link rel="icon" type="image/png" href="icons/logo-cetem.png" />
-  <link rel="apple-touch-icon" href="icons/logo-cetem.png" />
+  <link rel="icon" type="image/svg+xml" href="icons/icon-192.svg" />
+  <link rel="apple-touch-icon" href="icons/icon-192.svg" />
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-  <link rel="stylesheet" href="css/styles.css" />
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+  <link rel="stylesheet" href="css/styles.css?v=202605040933" />
 </head>
 <body class="bg-slate-50 text-slate-800">
   <div class="flex min-h-screen">
@@ -19,7 +21,6 @@
       <div class="p-4 border-b border-slate-700 space-y-2">
         <div class="flex items-center justify-between">
           <div class="flex items-center gap-2">
-            <img src="icons/logo-cetem.png" alt="CETEM" class="h-10 w-auto" />
             <div class="text-sm font-semibold leading-tight">GERÊNCIA<br>FINANCEIRA</div>
           </div>
           <button id="btn-close-menu" class="md:hidden text-slate-300 text-xl" aria-label="Fechar">×</button>
@@ -28,10 +29,15 @@
         <select id="sel-perfil" class="w-full bg-slate-800 text-slate-100 text-xs rounded px-2 py-1 border border-slate-700"></select>
       </div>
       <nav id="nav" class="flex-1 p-2 space-y-1 text-sm overflow-y-auto"></nav>
-      <div class="p-3 text-xs text-slate-400 border-t border-slate-700">
+      <div class="p-3 text-xs text-slate-400 border-t border-slate-700 space-y-2">
+        <div id="user-block" class="pb-2 border-b border-slate-700 hidden">
+          <div class="text-[10px] uppercase tracking-wider text-slate-500">Logado como</div>
+          <div id="user-email" class="text-slate-100 font-medium truncate" title="">—</div>
+          <button id="btn-logout" class="mt-1 w-full text-left text-xs text-slate-300 hover:text-white underline">↩ Sair</button>
+        </div>
         <div id="empresa-nome">—</div>
-        <div class="mt-1 flex items-center justify-between">
-          <span>v0.3</span>
+        <div class="flex items-center justify-between">
+          <span>v0.5 · Uso interno</span>
           <span id="online-badge" class="badge badge-g">offline?</span>
         </div>
       </div>
@@ -67,28 +73,77 @@
 
   <div id="modal-root"></div>
 
-  <script src="js/db.js"></script>
-  <script src="js/kpis.js"></script>
-  <script src="js/ui.js"></script>
-  <script src="js/reports.js"></script>
-  <script src="js/ofx.js"></script>
-  <script src="js/impostos.js"></script>
-  <script src="js/pix.js"></script>
-  <script src="js/views.js"></script>
-  <script src="js/app.js"></script>
+  <!-- Backend de dados: Supabase (provisorio). Para reverter ao localStorage,
+       troque o bloco abaixo por: <script src="js/db.js"></script> -->
+  <script src="js/supabase_config.js?v=202605040933"></script>
+  <script src="js/supabase_client.js?v=202605040933"></script>
+  <script src="js/auth.js?v=202605040933"></script>
+  <script src="js/db_supabase.js?v=202605040933"></script>
+  <script src="js/kpis.js?v=202605040933"></script>
+  <script src="js/ui.js?v=202605040933"></script>
+  <script src="js/reports.js?v=202605040933"></script>
+  <script src="js/validators.js?v=202605040933"></script>
+  <script src="js/ofx.js?v=202605040933"></script>
+  <script src="js/impostos.js?v=202605040933"></script>
+  <script src="js/pix.js?v=202605040933"></script>
+  <script src="js/views.js?v=202605040933"></script>
+  <!-- Bootstrap: 1) checa sessao; 2) se nao logado, mostra login; 3) aguarda DB.ready; 4) carrega app.js -->
   <script>
-    if ('serviceWorker' in navigator) {
-      window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
-    }
-    const onlineBadge = document.getElementById('online-badge');
-    const setOnline = () => { onlineBadge.textContent = navigator.onLine ? 'online' : 'offline'; onlineBadge.className = 'badge ' + (navigator.onLine ? 'badge-v' : 'badge-a'); };
-    window.addEventListener('online', setOnline); window.addEventListener('offline', setOnline); setOnline();
+    (async () => {
+      const view = document.getElementById('view');
+      view.innerHTML = '<div class="card"><strong>Verificando sessao...</strong></div>';
 
-    const sb = document.getElementById('sidebar'), ov = document.getElementById('sidebar-overlay');
-    const toggle = (show) => { sb.classList.toggle('-translate-x-full', !show); ov.classList.toggle('hidden', !show); };
-    document.getElementById('btn-menu').onclick = () => toggle(true);
-    document.getElementById('btn-close-menu').onclick = () => toggle(false);
-    ov.onclick = () => toggle(false);
+      // 1) Sessao
+      const session = await Auth.getSession();
+      if (!session) {
+        Auth.renderLoginScreen({ onSuccess: () => location.reload() });
+        return;
+      }
+
+      // 2) Mostra email logado e botao Sair na sidebar (bloco proprio,
+      //    nao usa #empresa-nome porque app.js sobrescreve aquele elemento).
+      const userBlock = document.getElementById('user-block');
+      const userEmailEl = document.getElementById('user-email');
+      const btnLogout = document.getElementById('btn-logout');
+      const userEmail = (session.user.email || '').toLowerCase();
+      if (userBlock && userEmailEl && btnLogout) {
+        userEmailEl.textContent = userEmail || 'usuario';
+        userEmailEl.title = userEmail;
+        userBlock.classList.remove('hidden');
+        btnLogout.onclick = async () => {
+          if (!confirm('Sair da sua conta?')) return;
+          await Auth.signOut();
+          location.reload();
+        };
+      }
+
+      // 2b) Permissoes por email: admin ve botoes destrutivos, outros nao.
+      const adminEmails = (window.ADMIN_EMAILS || []).map(e => e.toLowerCase());
+      window.IS_ADMIN = adminEmails.includes(userEmail);
+      if (!window.IS_ADMIN) {
+        // Esconde botoes destrutivos para nao-admin (manter a barra mais limpa)
+        ['btn-reset','btn-snapshot','btn-export'].forEach(id => {
+          const el = document.getElementById(id);
+          if (el) el.classList.add('hidden');
+        });
+        // O input file-import esta dentro de um <label>; esconde o label inteiro
+        const fileImport = document.getElementById('file-import');
+        if (fileImport && fileImport.parentElement) fileImport.parentElement.classList.add('hidden');
+      }
+
+      // 3) Aguarda DB.ready (Supabase carregar sessao e dados iniciais)
+      try {
+        if (window.DB && window.DB.ready) await window.DB.ready;
+      } catch (e) {
+        view.innerHTML = '<div class="card"><strong style="color:#b91c1c">Erro ao conectar ao banco:</strong> ' + (e.message || e) + '</div>';
+        return;
+      }
+
+      // 4) Carrega app.js dinamicamente - so agora que DB esta pronto
+      const s = document.createElement('script');
+      s.src = 'js/app.js?v=202605040933';
+      document.body.appendChild(s);
+    })();
   </script>
 </body>
 </html>

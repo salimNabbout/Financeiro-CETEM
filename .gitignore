@@ -1,6 +1,11 @@
+# Internos de operação (não vão pro deploy público)
+iniciar.bat
+iniciar.vbs
+instalar_atalho.bat
+criar_atalho.ps1
+OPERACAO.md
+DEPLOY_E_USUARIOS.md
+*.truncado-*
+*.backup
 .DS_Store
 Thumbs.db
-desktop.ini
-*.log
-*.tmp
-*.bak

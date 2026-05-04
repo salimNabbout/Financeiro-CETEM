@@ -10,7 +10,7 @@ const KPI = (() => {
     const base = contaId
       ? Number((st.contas.find(c => c.id === contaId) || {}).saldoInicial || 0)
       : (contas.reduce((s, c) => s + (Number(c.saldoInicial) || 0), 0) + (Number(st.empresa.caixaInicial) || 0));
-    return st.movimentos.filter(m => m.status === 'realizado' && (!contaId || (m.contaId || 'principal') === contaId))
+    return st.movimentos.filter(m => m.status === 'realizado' && !m.cancelado && (!contaId || (m.contaId || 'principal') === contaId))
       .reduce((s, m) => s + (m.tipo === 'entrada' ? +m.valor : -(+m.valor)), base);
   }
 
@@ -47,7 +47,7 @@ const KPI = (() => {
     let saldo = saldoRealizado(st);
     const mapa = {};
     // previstos de movimentos
-    st.movimentos.filter(m => m.status === 'previsto' && m.data >= inicio)
+    st.movimentos.filter(m => m.status === 'previsto' && !m.cancelado && m.data >= inicio)
       .forEach(m => {
         mapa[m.data] = mapa[m.data] || { entradas: 0, saidas: 0 };
         if (m.tipo === 'entrada') mapa[m.data].entradas += +m.valor;
@@ -191,7 +191,7 @@ const KPI = (() => {
   function dreGerencial(st, ano, mes) {
     // mes 1-12
     const pref = `${ano}-${String(mes).padStart(2, '0')}`;
-    const movs = st.movimentos.filter(m => m.status === 'realizado' && m.data.startsWith(pref));
+    const movs = st.movimentos.filter(m => m.status === 'realizado' && !m.cancelado && m.data.startsWith(pref));
     const receitaBruta = movs.filter(m => m.tipo === 'entrada' && m.natureza === 'op').reduce((s, m) => s + (+m.valor), 0);
     const receitaNop   = movs.filter(m => m.tipo === 'entrada' && m.natureza !== 'op').reduce((s, m) => s + (+m.valor), 0);
     const saidasCat    = {};
@@ -235,7 +235,7 @@ const KPI = (() => {
     // DFC método direto: separa entradas/saídas por atividade.
     dfcDireto: function (st, ano, mes) {
       const pref = `${ano}-${String(mes).padStart(2, '0')}`;
-      const movs = st.movimentos.filter(m => m.status === 'realizado' && m.data.startsWith(pref));
+      const movs = st.movimentos.filter(m => m.status === 'realizado' && !m.cancelado && m.data.startsWith(pref));
       const blocos = { operacional: { entradas: {}, saidas: {} }, investimento: { entradas: {}, saidas: {} }, financiamento: { entradas: {}, saidas: {} } };
       movs.forEach(m => {
         const atv = m.natureza === 'op' ? 'operacional' : (m.natureza === 'ext' ? 'investimento' : 'financiamento');
@@ -264,7 +264,7 @@ const KPI = (() => {
         const d = new Date(hoje.getFullYear(), hoje.getMonth() - i, 1);
         const pref = d.toISOString().slice(0, 7);
         out.labels.push(pref);
-        const movs = st.movimentos.filter(m => m.status === 'realizado' && m.data.startsWith(pref));
+        const movs = st.movimentos.filter(m => m.status === 'realizado' && !m.cancelado && m.data.startsWith(pref));
         const r = movs.filter(m => m.tipo === 'entrada').reduce((s, m) => s + (+m.valor), 0);
         const s = movs.filter(m => m.tipo === 'saida').reduce((a, m) => a + (+m.valor), 0);
         out.receita.push(r);
@@ -281,7 +281,7 @@ const KPI = (() => {
       for (let i = 1; i <= 3; i++) {
         const d = new Date(hoje.getFullYear(), hoje.getMonth() - i, 1);
         const pref = d.toISOString().slice(0, 7);
-        const movs = st.movimentos.filter(m => m.status === 'realizado' && m.data.startsWith(pref));
+        const movs = st.movimentos.filter(m => m.status === 'realizado' && !m.cancelado && m.data.startsWith(pref));
         const e = movs.filter(m => m.tipo === 'entrada').reduce((s, m) => s + (+m.valor), 0);
         const s = movs.filter(m => m.tipo === 'saida').reduce((a, m) => a + (+m.valor), 0);
         const liquido = s - e;
@@ -305,7 +305,7 @@ const KPI = (() => {
       for (let i = meses - 1; i >= 0; i--) {
         const d = new Date(hoje.getFullYear(), hoje.getMonth() - i, 1);
         const pref = d.toISOString().slice(0, 7);
-        const r = st.movimentos.filter(x => x.status === 'realizado' && x.tipo === 'entrada' && x.data.startsWith(pref)).reduce((s, x) => s + (+x.valor), 0);
+        const r = st.movimentos.filter(x => x.status === 'realizado' && !x.cancelado && x.tipo === 'entrada' && x.data.startsWith(pref)).reduce((s, x) => s + (+x.valor), 0);
         porMes[d.getMonth() + 1].push(r);
       }
       const medias = {};
@@ -321,7 +321,7 @@ const KPI = (() => {
       for (let i = N - 1; i >= 0; i--) {
         const d = new Date(hoje.getFullYear(), hoje.getMonth() - i, 1);
         const pref = d.toISOString().slice(0, 7);
-        const r = st.movimentos.filter(m => m.status === 'realizado' && m.tipo === 'entrada' && m.data.startsWith(pref)).reduce((s, m) => s + (+m.valor), 0);
+        const r = st.movimentos.filter(m => m.status === 'realizado' && !m.cancelado && m.tipo === 'entrada' && m.data.startsWith(pref)).reduce((s, m) => s + (+m.valor), 0);
         serie.push({ mes: pref, valor: r });
       }
       // ajuste y = a + b*x onde x = índice do mês
@@ -343,7 +343,7 @@ const KPI = (() => {
     // Comparativo YoY
     yoy: function (st, ano, mes) {
       const mk = (y, m) => `${y}-${String(m).padStart(2, '0')}`;
-      const sumEnt = (pref) => st.movimentos.filter(x => x.status === 'realizado' && x.data.startsWith(pref))
+      const sumEnt = (pref) => st.movimentos.filter(x => x.status === 'realizado' && !x.cancelado && x.data.startsWith(pref))
         .reduce((acc, x) => { if (x.tipo === 'entrada') acc.e += +x.valor; else acc.s += +x.valor; return acc; }, { e: 0, s: 0 });
       const cur = sumEnt(mk(ano, mes));
       const prev = sumEnt(mk(ano - 1, mes));
@@ -372,7 +372,7 @@ const KPI = (() => {
     realizadoPorCategoria: function (st, ano, mes) {
       const pref = `${ano}-${String(mes).padStart(2, '0')}`;
       const out = {};
-      st.movimentos.filter(m => m.status === 'realizado' && m.tipo === 'saida' && m.data.startsWith(pref))
+      st.movimentos.filter(m => m.status === 'realizado' && !m.cancelado && m.tipo === 'saida' && m.data.startsWith(pref))
         .forEach(m => { out[m.categoria || 'Outros'] = (out[m.categoria || 'Outros'] || 0) + (+m.valor); });
       return out;
     },

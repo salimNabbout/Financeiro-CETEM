@@ -1,100 +1,196 @@
 const Views = (() => {
+  // Helper local: pt-BR date format. Tem um espelho em UI.fmtDate (ui.js),
+  // mas mantemos aqui para evitar crash se ui.js estiver em versao antiga (cache).
+  function fmtDate(iso) {
+    if (!iso) return '';
+    const m = String(iso).match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (m) return m[3] + '/' + m[2] + '/' + m[1];
+    try {
+      const d = new Date(iso);
+      if (!isNaN(d.getTime())) return d.toLocaleDateString('pt-BR');
+    } catch (e) {}
+    return iso;
+  }
+
   const { el, modal, confirmar, field, kpi, badge } = UI;
   const { BRL, PCT, today, daysBetween } = KPI;
   let chartRef = null;
   let cenarioSel = 'realista';
+  // Formata número como texto brasileiro (vírgula decimal), sem prefixo. 6000 -> '6000,00'.
+  // Aceita null/undefined como '' (não força 0,00). Usado ao popular inputs de edição.
+  function fmtVal(n) {
+    if (n == null || n === '') return '';
+    const v = Number(n);
+    if (!isFinite(v)) return '';
+    return v.toFixed(2).replace('.', ',');
+  }
 
   function clientesMap(st) { const m = {}; st.clientes.forEach(c => m[c.id] = c); return m; }
   function fornecedoresMap(st) { const m = {}; st.fornecedores.forEach(c => m[c.id] = c); return m; }
 
-  // ================= DASHBOARD =================
+  // ================= DASHBOARD (Cockpit Executivo CFO) =================
+  let dashWaterRef = null;
   function dashboard(st) {
+    const v = document.getElementById('view'); v.innerHTML = '';
+
+    // ---- Calculos ----
     const saldo = KPI.saldoRealizado(st);
-    const proj = KPI.saldoProjetadoSemana(st);
+    const proj7 = KPI.saldoProjetadoSemana(st);
     const cob = KPI.coberturaCaixaFixo(st);
     const inad = KPI.inadimplenciaPct(st);
     const { mcPct, receita, mc } = KPI.margemContribuicao(st);
     const pe = KPI.pontoEquilibrio(st);
     const ncgV = KPI.ncg(st);
     const ro = KPI.resultadoOperacional(st);
+    const burn = KPI.burnRate(st);
+    const rw = KPI.runwayMeses(st);
     const alerts = KPI.alertas(st);
-
-    const N = (id) => () => window.Nav(id);
     const series = KPI.seriesKpi(st, 6);
-    const grid = el('div', { class: 'grid-kpi' }, [
-      kpi('Saldo realizado', BRL(saldo), KPI.semSaldo(saldo, st.parametros.caixaMinimo), 'Caixa atual', N('caixa'), { values: series.saldoFim, color: '#2563eb' }),
-      kpi('Saldo projetado (7d)', BRL(proj), KPI.semSaldo(proj, st.parametros.caixaMinimo), 'Entradas − Saídas previstas', N('cenarios')),
-      kpi('Cobertura caixa fixo', cob == null ? '—' : cob.toFixed(1) + ' meses', KPI.semCobertura(cob), 'Ideal: > 1,5 mês', N('dre')),
-      kpi('Margem contribuição', PCT(mcPct), KPI.semMargem(mcPct, st.parametros.metaMargemPct), BRL(mc) + ' sobre ' + BRL(receita), N('margem'), { values: series.receita, color: '#16a34a' }),
-      kpi('Ponto de equilíbrio', pe == null ? '—' : BRL(pe), pe && receita ? (receita < pe ? 'r' : 'v') : 'g', 'Receita mínima mensal', N('margem')),
-      kpi('Inadimplência', PCT(inad), KPI.semInad(inad, st.parametros.limiteInadimplenciaPct), 'Vencidos / Receber', N('regua')),
-      kpi('NCG', BRL(ncgV), ncgV > saldo ? 'a' : 'v', 'Capital de giro necessário', N('dre')),
-      kpi('Resultado operacional', BRL(ro), ro < 0 ? 'r' : (ro < custoFixoSafe(st) * 0.1 ? 'a' : 'v'), 'MC − custos fixos', N('dre'), { values: series.resultado, color: '#0891b2' }),
-      (() => {
-        const burn = KPI.burnRate(st);
-        return kpi('Burn rate', burn > 0 ? BRL(burn) + '/mês' : 'não queima', burn > 0 ? (burn > saldo * 0.5 ? 'r' : 'a') : 'v', 'Saídas − Entradas (média 3m)');
-      })(),
-      (() => {
-        const rw = KPI.runwayMeses(st);
-        return kpi('Runway', rw == null ? '∞' : rw.toFixed(1) + ' meses', rw == null ? 'v' : rw < 3 ? 'r' : rw < 6 ? 'a' : 'v', 'Meses de caixa no ritmo atual');
-      })()
-    ]);
 
-    const com = KPI.indicadoresComerciais(st);
-    const indicadoresComerciais = el('div', { class: 'card' }, [
-      el('h3', { class: 'font-semibold mb-3' }, 'Indicadores comerciais do mês'),
-      el('div', { class: 'grid-kpi' }, [
-        kpi('Ticket médio', BRL(com.ticketMedio), 'g', `${com.titulosMes} títulos emitidos`),
-        kpi('Clientes com compra', String(com.clientesMes), 'v', 'Este mês'),
-        kpi('Novos clientes', String(com.novosMes), com.novosMes > 0 ? 'v' : 'g', 'Primeira compra neste mês'),
-        kpi('Base ativa', String(com.clientesAtivos), 'g', 'Total com pelo menos 1 título')
-      ])
-    ]);
+    // Waterfall do mes corrente
+    const hoje = new Date();
+    const anoM = hoje.getFullYear();
+    const mesM = hoje.getMonth() + 1;
+    const ini = `${anoM}-${String(mesM).padStart(2,'0')}-01`;
+    const ult = new Date(anoM, mesM, 0).getDate();
+    const fim = `${anoM}-${String(mesM).padStart(2,'0')}-${String(ult).padStart(2,'0')}`;
+    const movsMes = (st.movimentos || []).filter(m => !m.cancelado && m.status === 'realizado' && m.data >= ini && m.data <= fim);
+    const entradasMes = movsMes.filter(m => m.tipo === 'entrada').reduce((s,m) => s + (+m.valor || 0), 0);
+    const saidasMes = movsMes.filter(m => m.tipo === 'saida').reduce((s,m) => s + (+m.valor || 0), 0);
+    const resultadoMes = entradasMes - saidasMes;
+    const saldoInicialMes = saldo - resultadoMes;
+    const metaResultado = (st.metas && st.metas.resultadoMensal) || 0;
 
-    const alertBox = el('div', { class: 'card' }, [
-      el('h3', { class: 'font-semibold mb-3' }, 'Alertas e ações sugeridas'),
-      alerts.length === 0
-        ? el('div', { class: 'alert alert-v' }, [el('span', {}, 'Nenhum alerta crítico no momento.')])
-        : el('div', { class: 'space-y-2' }, alerts.map(a => el('div', { class: `alert alert-${a.sev}` }, [
-            el('div', {}, [el('div', { class: 'font-semibold' }, a.msg), el('div', { class: 'text-xs mt-1' }, '→ ' + a.acao)])
-          ])))
-    ]);
+    // Trend do saldo (diff vs ha 7 dias) - usa series
+    const saldoAtualSerie = (series.saldoFim && series.saldoFim.length) ? series.saldoFim[series.saldoFim.length - 1] : saldo;
+    const saldoAnterior = (series.saldoFim && series.saldoFim.length > 1) ? series.saldoFim[series.saldoFim.length - 2] : saldo;
+    const variacaoMes = saldoAnterior !== 0 ? ((saldoAtualSerie - saldoAnterior) / Math.abs(saldoAnterior) * 100) : 0;
 
-    const chartCard = el('div', { class: 'card' }, [
+    // ---- Hero KPIs (4 cards) ----
+    function heroCard(label, valor, hint, sev, onClick) {
+      const cor = sev === 'r' ? '#A32D2D' : sev === 'a' ? '#854F0B' : sev === 'v' ? '#0F6E56' : '#5F5E5A';
+      return el('div', {
+        class: 'card cursor-pointer hover:shadow-md',
+        style: 'padding: 14px 18px;',
+        onclick: onClick || (() => {})
+      }, [
+        el('div', { style: 'font-size: 11px; color: #888; text-transform: uppercase; letter-spacing: .04em; font-weight: 600;' }, label),
+        el('div', { style: 'font-size: 24px; font-weight: 600; margin-top: 4px;' }, valor),
+        el('div', { style: 'font-size: 12px; margin-top: 2px; color: ' + cor + ';' }, hint)
+      ]);
+    }
+    const hero = el('div', {
+      style: 'display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 1.25rem;'
+    }, [
+      heroCard('Saldo consolidado', BRL(saldo),
+        variacaoMes >= 0 ? `+${variacaoMes.toFixed(1)}% vs. mes anterior` : `${variacaoMes.toFixed(1)}% vs. mes anterior`,
+        KPI.semSaldo(saldo, st.parametros.caixaMinimo), () => window.Nav('caixa')),
+      heroCard('Resultado do mes', BRL(resultadoMes),
+        metaResultado > 0 ? `Meta ${BRL(metaResultado)} · ${(resultadoMes/metaResultado*100).toFixed(0)}%` : 'Sem meta cadastrada',
+        resultadoMes < 0 ? 'r' : (metaResultado > 0 && resultadoMes < metaResultado * 0.7 ? 'a' : 'v'),
+        () => window.Nav('dre')),
+      heroCard('Runway', rw == null ? 'Ilimitado' : rw.toFixed(1) + ' meses',
+        rw == null ? 'Caixa folgado' : (rw < 3 ? 'Critico' : rw < 6 ? 'Atencao' : 'Caixa folgado'),
+        rw == null ? 'v' : rw < 3 ? 'r' : rw < 6 ? 'a' : 'v',
+        () => window.Nav('metas')),
+      heroCard('Inadimplencia', PCT(inad),
+        inad <= st.parametros.limiteInadimplenciaPct ? `Abaixo do limite (${st.parametros.limiteInadimplenciaPct}%)` : `Acima do limite (${st.parametros.limiteInadimplenciaPct}%)`,
+        KPI.semInad(inad, st.parametros.limiteInadimplenciaPct), () => window.Nav('regua'))
+    ]);
+    v.appendChild(hero);
+
+    // ---- Projecao 60 dias ----
+    const chartCard = el('div', { class: 'card mb-3' }, [
       el('div', { class: 'flex justify-between items-center mb-3' }, [
-        el('h3', { class: 'font-semibold' }, 'Projeção de caixa (próximos 60 dias)'),
+        el('h3', { class: 'font-semibold' }, 'Projecao de caixa - proximos 60 dias'),
         el('div', { class: 'flex gap-1' }, Object.keys(KPI.CENARIOS).map(k =>
           el('button', { class: 'btn ' + (k === cenarioSel ? 'btn-p' : 'btn-s'), onclick: () => { cenarioSel = k; dashboard(DB.get()); } }, k[0].toUpperCase() + k.slice(1))
         ))
       ]),
-      el('canvas', { id: 'chart-fluxo', height: '80' })
+      el('canvas', { id: 'chart-fluxo', height: '90' })
     ]);
-
-    const v = document.getElementById('view');
-    v.innerHTML = '';
-    v.appendChild(grid);
-    v.appendChild(indicadoresComerciais);
-    v.appendChild(alertBox);
     v.appendChild(chartCard);
 
+    // ---- Linha 2: Waterfall + Alertas (60/40) ----
+    const linha2 = el('div', { style: 'display: grid; grid-template-columns: 1.4fr 1fr; gap: 12px; margin-bottom: 1rem;' }, [
+      el('div', { class: 'card' }, [
+        el('h3', { class: 'font-semibold mb-3' }, `Waterfall - ${hoje.toLocaleString('pt-BR', { month: 'long', year: 'numeric' })}`),
+        el('canvas', { id: 'chart-water', height: '95' })
+      ]),
+      el('div', { class: 'card' }, [
+        el('h3', { class: 'font-semibold mb-3' }, `Alertas (${alerts.length})`),
+        alerts.length === 0
+          ? el('div', { class: 'text-sm text-slate-500' }, 'Nenhum alerta critico no momento.')
+          : el('div', { class: 'space-y-2' }, alerts.slice(0, 5).map(a => {
+              const cor = a.sev === 'r' ? '#E24B4A' : a.sev === 'a' ? '#BA7517' : '#1D9E75';
+              return el('div', { style: 'display: flex; gap: 10px; align-items: flex-start;' }, [
+                el('span', { style: `width: 4px; align-self: stretch; background: ${cor}; border-radius: 2px;` }),
+                el('div', {}, [
+                  el('div', { style: 'font-size: 13px; font-weight: 500;' }, a.msg),
+                  el('div', { style: 'font-size: 12px; color: #666;' }, a.acao || '')
+                ])
+              ]);
+            }))
+      ])
+    ]);
+    v.appendChild(linha2);
+
+    // ---- Secondary KPIs (linha de detalhes) ----
+    const secCards = el('div', { style: 'display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 1rem;' }, [
+      heroCard('Margem contribuicao', PCT(mcPct), `${BRL(mc)} sobre ${BRL(receita)}`, KPI.semMargem(mcPct, st.parametros.metaMargemPct), () => window.Nav('margem')),
+      heroCard('Ponto de equilibrio', pe == null ? '-' : BRL(pe), 'Receita minima mensal', pe && receita ? (receita < pe ? 'r' : 'v') : 'g', () => window.Nav('margem')),
+      heroCard('Burn rate', burn > 0 ? BRL(burn) + '/mes' : 'Sem queima', 'Saidas - entradas (3m)', burn > 0 ? (burn > saldo * 0.5 ? 'r' : 'a') : 'v'),
+      heroCard('NCG', BRL(ncgV), 'Capital de giro necessario', ncgV > saldo ? 'a' : 'v', () => window.Nav('dre'))
+    ]);
+    v.appendChild(secCards);
+
+    // ---- Renderiza graficos (Chart.js) ----
     const proj60 = KPI.projecaoDiaria(st, 60, cenarioSel);
     if (chartRef) chartRef.destroy();
     chartRef = new Chart(document.getElementById('chart-fluxo'), {
       type: 'line',
       data: {
-        labels: proj60.map(p => p.data),
+        labels: proj60.map(p => fmtDate(p.data)),
         datasets: [{
           label: 'Saldo projetado',
           data: proj60.map(p => p.saldo),
-          borderColor: '#2563eb',
-          backgroundColor: 'rgba(37,99,235,.1)',
-          tension: .2,
-          fill: true
+          borderColor: '#185FA5',
+          backgroundColor: 'rgba(24,95,165,.1)',
+          tension: .25,
+          fill: true,
+          pointRadius: 0
         }]
       },
-      options: { scales: { y: { ticks: { callback: v => BRL(v) } } }, plugins: { legend: { display: false } } }
+      options: {
+        plugins: { legend: { display: false } },
+        scales: {
+          x: { ticks: { maxTicksLimit: 8 } },
+          y: { ticks: { callback: v => BRL(v) } }
+        }
+      }
+    });
+
+    if (dashWaterRef) dashWaterRef.destroy();
+    dashWaterRef = new Chart(document.getElementById('chart-water'), {
+      type: 'bar',
+      data: {
+        labels: ['Saldo inicial', 'Entradas', 'Saidas', 'Saldo final'],
+        datasets: [{
+          data: [saldoInicialMes, entradasMes, -saidasMes, saldo],
+          backgroundColor: ['#888780', '#1D9E75', '#E24B4A', '#185FA5'],
+          borderWidth: 0
+        }]
+      },
+      options: {
+        plugins: { legend: { display: false }, tooltip: { callbacks: { label: ctx => BRL(Math.abs(ctx.raw)) } } },
+        scales: {
+          x: { ticks: { font: { size: 11 } }, grid: { display: false } },
+          y: { ticks: { callback: v => BRL(Math.abs(v)) } }
+        }
+      }
     });
   }
+
   function custoFixoSafe(st) { return Math.max(1, KPI.custoFixoMensal(st)); }
 
   // ================= FLUXO DE CAIXA =================
@@ -135,7 +231,7 @@ const Views = (() => {
     if (!movs.length) tbody.appendChild(el('tr', {}, el('td', { colspan: 8, class: 'text-center py-6 text-slate-500' }, 'Sem lançamentos.')));
     movs.forEach(m => {
       tbody.appendChild(el('tr', {}, [
-        el('td', {}, m.data),
+        el('td', {}, fmtDate(m.data)),
         el('td', {}, el('div', {}, [
           el('span', {}, m.descricao),
           ...(m.tags || []).map(t => { const b = badge(t, 'g'); b.style.marginLeft = '.25rem'; return b; })
@@ -143,11 +239,14 @@ const Views = (() => {
         el('td', {}, m.categoria || '—'),
         el('td', {}, badge(m.tipo === 'entrada' ? 'Entrada' : 'Saída', m.tipo === 'entrada' ? 'v' : 'r')),
         el('td', {}, ({ op: 'Operacional', nop: 'Não operacional', ext: 'Extraordinário' })[m.natureza] || '—'),
-        el('td', {}, badge(m.status === 'realizado' ? 'Realizado' : 'Previsto', m.status === 'realizado' ? 'v' : 'a')),
+        el('td', {}, m.cancelado ? badge('Cancelado', 'r') : badge(m.status === 'realizado' ? 'Realizado' : 'Previsto', m.status === 'realizado' ? 'v' : 'a')),
         el('td', { class: m.tipo === 'entrada' ? 'text-green-700 font-medium' : 'text-red-700 font-medium' }, (m.tipo === 'entrada' ? '+' : '−') + BRL(m.valor)),
         el('td', {}, el('div', { class: 'flex gap-1' }, [
-          can('editar') ? el('button', { class: 'btn btn-s', onclick: () => openMovimento(st, m) }, 'Editar') : null,
-          can('editar') ? el('button', { class: 'btn btn-d', onclick: () => confirmar('Excluir lançamento?', () => { DB.set(s => { s.movimentos = s.movimentos.filter(x => x.id !== m.id); }); }) }, 'Excluir') : null
+          can('editar') && !m.cancelado ? el('button', { class: 'btn btn-s', onclick: () => openMovimento(st, m) }, 'Editar') : null,
+          can('cancelar') && !m.cancelado ? el('button', { class: 'btn btn-d', onclick: () => UI.pedirMotivo({ titulo: 'Cancelar lançamento' }, (motivo) => {
+            const r = DB.cancelarMovimento(m.id, motivo);
+            if (!r.ok) UI.toast(r.erro, 'r'); else UI.toast('Lançamento cancelado.', 'v');
+          }) }, 'Cancelar') : null
         ].filter(Boolean)))
       ]));
     });
@@ -185,7 +284,7 @@ const Views = (() => {
       el('option', { value: 'previsto' }, 'Previsto')
     ]);
     inputs.status.value = data.status;
-    inputs.valor = el('input', { type: 'number', step: '0.01', class: 'input', value: data.valor });
+    inputs.valor = el('input', { type: 'text', inputmode: 'decimal', class: 'input', value: fmtVal(data.valor) });
     inputs.contaId = el('select', { class: 'select' }, (st.contas || []).filter(c => c.ativa !== false).map(c => el('option', { value: c.id }, c.nome)));
     inputs.contaId.value = data.contaId || 'principal';
     inputs.tags = el('input', { class: 'input', value: (data.tags || []).join(', '), placeholder: 'ex.: projeto X, marketing' });
@@ -243,8 +342,8 @@ const Views = (() => {
     v.appendChild(el('div', { class: 'flex justify-between items-center' }, [
       el('div', { class: 'text-sm text-slate-600' }, `Total em aberto: ${BRL(totalAberto)} · Vencidos: ${BRL(vencidos)}`),
       el('div', { class: 'flex gap-2' }, [
-        can('editar') ? el('button', { class: 'btn btn-s', onclick: () => openImportCadastros(st, 'clientes') }, 'Importar clientes') : null,
-        can('editar') ? el('button', { class: 'btn btn-s', onclick: () => openCliente(st) }, '+ Cliente') : null,
+        // "+ Cliente" e "Importar clientes" removidos: agora ficam em Menu > Clientes
+        // (e o "+ Cadastrar novo" inline no autocomplete do "+ Título").
         can('editar') ? el('button', { class: 'btn btn-p', onclick: () => openTituloReceber(st) }, '+ Título') : null
       ].filter(Boolean))
     ]));
@@ -269,8 +368,8 @@ const Views = (() => {
       tbody.appendChild(el('tr', {}, [
         el('td', {}, cm[t.clienteId]?.nome || '—'),
         el('td', {}, t.documento || '—'),
-        el('td', {}, t.emissao || '—'),
-        el('td', {}, t.vencimento),
+        el('td', {}, t.emissao ? fmtDate(t.emissao) : '—'),
+        el('td', {}, fmtDate(t.vencimento)),
         el('td', {}, BRL(t.valor)),
         el('td', {}, BRL(t.valorRecebido || 0)),
         el('td', { class: 'font-medium' }, BRL(saldo)),
@@ -281,7 +380,10 @@ const Views = (() => {
           el('button', { class: 'btn btn-s', onclick: () => openPixQR(st, saldo, t.documento, cm[t.clienteId]?.nome) }, 'PIX'),
           el('button', { class: 'btn btn-s', onclick: () => openAnexos(st, t.id, 'receber') }, '📎' + (((st.anexos || {})[t.id] || []).length || '')),
           can('editar') ? el('button', { class: 'btn btn-s', onclick: () => openTituloReceber(st, t) }, 'Editar') : null,
-          can('editar') ? el('button', { class: 'btn btn-d', onclick: () => confirmar('Excluir título?', () => DB.set(s => { s.titulosReceber = s.titulosReceber.filter(x => x.id !== t.id); })) }, '×') : null
+          can('cancelar') && t.status !== 'cancelado' && t.status !== 'pago' ? el('button', { class: 'btn btn-d', onclick: () => UI.pedirMotivo({ titulo: 'Cancelar título a receber' }, (motivo) => {
+            const r = DB.cancelarTituloReceber(t.id, motivo);
+            if (!r.ok) UI.toast(r.erro, 'r'); else UI.toast('Título cancelado.', 'v');
+          }) }, 'Cancelar') : null
         ]))
       ]));
     });
@@ -289,59 +391,188 @@ const Views = (() => {
     v.appendChild(el('div', { class: 'card p-0 overflow-hidden' }, tbl));
   }
 
-  function openCliente(st, c = null) {
-    const data = c || { nome: '', documento: '', limite: 0, prazo: 30, rating: 'bom', telefone: '', email: '' };
+  // Helper: titulo de secao dentro de um modal
+  function secao(titulo) {
+    return el('div', { class: 'mt-4 mb-2 pb-1 border-b border-slate-200 dark:border-slate-700 text-xs font-bold uppercase tracking-wide text-slate-500' }, titulo);
+  }
+
+  function openCliente(st, c = null, opts = {}) {
+    const data = c || {
+      nome: opts.preNome || '', razaoSocial: '', documento: '', ie: '',
+      telefone: '', email: '', contato: '',
+      cidade: '', estado: '', endereco: '', bairro: '', cep: '',
+      banco: '', agencia: '', conta: '',
+      limite: 0, prazo: 30, rating: 'bom',
+      tipoAtividade: '', tags: ''
+    };
     const body = el('div');
     const inp = {
-      nome: el('input', { class: 'input', value: data.nome }),
+      nome: el('input', { class: 'input', value: data.nome, placeholder: 'Nome de exibição (fantasia ou nome)' }),
+      razaoSocial: el('input', { class: 'input', value: data.razaoSocial || '' }),
       documento: el('input', { class: 'input', value: data.documento }),
-      telefone: el('input', { class: 'input', value: data.telefone || '', placeholder: '55DDDNNNNNNNN' }),
+      ie: el('input', { class: 'input', value: data.ie || '' }),
+      telefone: el('input', { class: 'input', value: data.telefone || '', placeholder: 'Ex.: (21) 2451-2581 ou 55DDDNNNNNNNN' }),
       email: el('input', { type: 'email', class: 'input', value: data.email || '' }),
-      limite: el('input', { type: 'number', step: '0.01', class: 'input', value: data.limite }),
+      contato: el('input', { class: 'input', value: data.contato || '', placeholder: 'Nome do responsável' }),
+      cidade: el('input', { class: 'input', value: data.cidade || '' }),
+      estado: el('input', { class: 'input', value: data.estado || '', placeholder: 'UF', maxlength: 2 }),
+      endereco: el('input', { class: 'input', value: data.endereco || '' }),
+      bairro: el('input', { class: 'input', value: data.bairro || '' }),
+      cep: el('input', { class: 'input', value: data.cep || '' }),
+      banco: el('input', { class: 'input', value: data.banco || '' }),
+      agencia: el('input', { class: 'input', value: data.agencia || '' }),
+      conta: el('input', { class: 'input', value: data.conta || '' }),
+      limite: el('input', { type: 'text', inputmode: 'decimal', class: 'input', value: data.limite }),
       prazo: el('input', { type: 'number', class: 'input', value: data.prazo }),
-      rating: el('select', { class: 'select' }, ['bom', 'atencao', 'risco', 'bloqueado'].map(r => el('option', { value: r }, r)))
+      rating: el('select', { class: 'select' }, ['bom', 'atencao', 'risco', 'bloqueado'].map(r => el('option', { value: r }, r))),
+      tipoAtividade: el('input', { class: 'input', value: data.tipoAtividade || '', placeholder: 'Ex.: Industrial, Prestação de Serviços' }),
+      tags: el('input', { class: 'input', value: data.tags || '', placeholder: 'Ex.: Cliente Final, Revenda' })
     };
     inp.rating.value = data.rating;
+
+    body.appendChild(secao('Identificação'));
     body.appendChild(el('div', { class: 'grid grid-cols-2 gap-3' }, [
-      field('Nome', inp.nome), field('CNPJ/CPF', inp.documento),
-      field('Telefone (c/ DDI)', inp.telefone), field('E-mail', inp.email),
-      field('Limite (R$)', inp.limite), field('Prazo (dias)', inp.prazo),
-      field('Rating', inp.rating)
+      field('Nome', inp.nome), field('Razão social', inp.razaoSocial),
+      field('CNPJ/CPF', inp.documento), field('Inscrição Estadual', inp.ie)
     ]));
+
+    body.appendChild(secao('Contato'));
+    body.appendChild(el('div', { class: 'grid grid-cols-3 gap-3' }, [
+      field('Telefone', inp.telefone), field('E-mail', inp.email),
+      field('Pessoa de contato', inp.contato)
+    ]));
+
+    body.appendChild(secao('Endereço'));
+    body.appendChild(el('div', { class: 'grid grid-cols-2 gap-3' }, [
+      field('Cidade', inp.cidade), field('Estado (UF)', inp.estado),
+      field('Endereço', inp.endereco), field('Bairro', inp.bairro),
+      field('CEP', inp.cep)
+    ]));
+
+    body.appendChild(secao('Dados bancários (para PIX/transferência)'));
+    body.appendChild(el('div', { class: 'grid grid-cols-3 gap-3' }, [
+      field('Banco', inp.banco), field('Agência', inp.agencia), field('Conta', inp.conta)
+    ]));
+
+    body.appendChild(secao('Comercial'));
+    body.appendChild(el('div', { class: 'grid grid-cols-3 gap-3' }, [
+      field('Limite de crédito (R$)', inp.limite),
+      field('Prazo padrão (dias)', inp.prazo),
+      field('Rating', inp.rating),
+      field('Tipo de atividade', inp.tipoAtividade),
+      field('Tags', inp.tags)
+    ]));
+
     modal(c ? 'Editar cliente' : 'Novo cliente', body, () => {
-      if (!inp.nome.value.trim()) { alert('Nome obrigatório.'); return false; }
-      const payload = { id: c?.id || DB.id(), nome: inp.nome.value.trim(), documento: inp.documento.value, telefone: inp.telefone.value, email: inp.email.value, limite: +inp.limite.value || 0, prazo: +inp.prazo.value || 0, rating: inp.rating.value };
+      const vNome = Validators.texto(inp.nome.value, { nome: 'Nome', max: 200 });
+      if (!vNome.ok) { UI.toast(vNome.erro, 'r'); inp.nome.classList.add('input-erro'); return false; }
+      // Validação de documento e contato relaxada: aceita vazio ou valido
+      const docVal = String(inp.documento.value || '').trim();
+      let docFinal = '';
+      if (docVal) {
+        const vDoc = Validators.documento(docVal);
+        if (!vDoc.ok) { UI.toast('CNPJ/CPF: ' + vDoc.erro, 'r'); inp.documento.classList.add('input-erro'); return false; }
+        docFinal = vDoc.value;
+        // Bloqueia duplicidade pelo documento normalizado
+        const docKey = String(docFinal).replace(/\D/g, '');
+        if (docKey) {
+          const dup = (st.clientes || []).find(x => x.id !== (c?.id) && String(x.documento || '').replace(/\D/g, '') === docKey);
+          if (dup) {
+            UI.toast(`Já existe um cliente com este CNPJ/CPF: "${dup.nome}". Ajuste o cadastro existente em vez de criar duplicado.`, 'r');
+            inp.documento.classList.add('input-erro');
+            return false;
+          }
+        }
+      }
+      const emailVal = String(inp.email.value || '').trim();
+      let emailFinal = '';
+      if (emailVal) {
+        const vEmail = Validators.email(emailVal);
+        if (!vEmail.ok) { UI.toast('E-mail: ' + vEmail.erro, 'r'); inp.email.classList.add('input-erro'); return false; }
+        emailFinal = vEmail.value;
+      }
+      const telVal = String(inp.telefone.value || '').trim();
+      let telFinal = telVal;
+      if (telVal) {
+        const vTel = Validators.telefone(telVal);
+        // Aceita telefone com formato livre (BR, "(21) 2451-2581") sem bloquear cadastro
+        if (vTel.ok) telFinal = vTel.value;
+      }
+      const payload = {
+        id: c?.id || DB.id(),
+        nome: vNome.value,
+        razaoSocial: String(inp.razaoSocial.value || '').trim(),
+        documento: docFinal,
+        ie: String(inp.ie.value || '').trim(),
+        telefone: telFinal,
+        email: emailFinal,
+        contato: String(inp.contato.value || '').trim(),
+        cidade: String(inp.cidade.value || '').trim(),
+        estado: String(inp.estado.value || '').trim().toUpperCase(),
+        endereco: String(inp.endereco.value || '').trim(),
+        bairro: String(inp.bairro.value || '').trim(),
+        cep: String(inp.cep.value || '').trim(),
+        banco: String(inp.banco.value || '').trim(),
+        agencia: String(inp.agencia.value || '').trim(),
+        conta: String(inp.conta.value || '').trim(),
+        limite: +inp.limite.value || 0,
+        prazo: +inp.prazo.value || 0,
+        rating: inp.rating.value,
+        tipoAtividade: String(inp.tipoAtividade.value || '').trim(),
+        tags: String(inp.tags.value || '').trim()
+      };
       DB.set(s => { if (c) s.clientes = s.clientes.map(x => x.id === c.id ? payload : x); else s.clientes.push(payload); });
+      UI.toast(c ? 'Cliente atualizado.' : 'Cliente cadastrado.', 'v');
+      if (typeof opts.onSaved === 'function') { try { opts.onSaved(payload); } catch (e) { console.error(e); } }
     });
   }
 
   function openTituloReceber(st, t = null) {
     if (!st.clientes.length) { alert('Cadastre um cliente primeiro.'); return; }
-    const data = t || { clienteId: st.clientes[0].id, documento: '', emissao: today(), vencimento: today(), valor: 0, valorRecebido: 0, status: 'aberto', observacao: '' };
+    const data = t || { clienteId: '', documento: '', emissao: today(), vencimento: today(), valor: 0, valorRecebido: 0, status: 'aberto', observacao: '' };
     const body = el('div');
+    const acCliente = UI.autocomplete({
+      items: st.clientes,
+      getLabel: c => c.nome,
+      getMeta: c => [c.documento, c.cidade].filter(Boolean).join(' · '),
+      getSearch: c => `${c.nome} ${c.razaoSocial || ''} ${c.documento || ''} ${c.cidade || ''}`,
+      placeholder: 'Buscar cliente por nome ou CNPJ...',
+      initialId: data.clienteId,
+      createLabel: 'Cadastrar novo cliente',
+      onCreate: (q) => {
+        openCliente(DB.get(), null, {
+          preNome: q,
+          onSaved: (novo) => { acCliente.setValue(novo.id); }
+        });
+      }
+    });
     const inp = {
-      clienteId: el('select', { class: 'select' }, st.clientes.map(c => el('option', { value: c.id }, c.nome))),
       documento: el('input', { class: 'input', value: data.documento }),
       emissao: el('input', { type: 'date', class: 'input', value: data.emissao }),
       vencimento: el('input', { type: 'date', class: 'input', value: data.vencimento }),
-      valor: el('input', { type: 'number', step: '0.01', class: 'input', value: data.valor }),
-      valorRecebido: el('input', { type: 'number', step: '0.01', class: 'input', value: data.valorRecebido || 0 }),
+      valor: el('input', { type: 'text', inputmode: 'decimal', class: 'input', value: fmtVal(data.valor) }),
+      valorRecebido: el('input', { type: 'text', inputmode: 'decimal', class: 'input', value: fmtVal(data.valorRecebido) }),
       observacao: el('textarea', { class: 'input', rows: 2 }, data.observacao || '')
     };
-    inp.clienteId.value = data.clienteId;
     body.appendChild(el('div', { class: 'grid grid-cols-2 gap-3' }, [
-      field('Cliente', inp.clienteId), field('NF/Pedido', inp.documento),
+      field('Cliente', acCliente.element), field('NF/Pedido', inp.documento),
       field('Emissão', inp.emissao), field('Vencimento', inp.vencimento),
       field('Valor (R$)', inp.valor), field('Valor recebido', inp.valorRecebido)
     ]));
     body.appendChild(field('Observação', inp.observacao));
     modal(t ? 'Editar título a receber' : 'Novo título a receber', body, () => {
-      const valor = +inp.valor.value || 0;
-      const rec = +inp.valorRecebido.value || 0;
-      if (!valor) { alert('Valor obrigatório.'); return false; }
-      const status = rec >= valor ? 'pago' : rec > 0 ? 'parcial' : 'aberto';
-      const payload = { id: t?.id || DB.id(), clienteId: inp.clienteId.value, documento: inp.documento.value, emissao: inp.emissao.value, vencimento: inp.vencimento.value, valor, valorRecebido: rec, status, observacao: inp.observacao.value };
+      if (!acCliente.value) { UI.toast('Selecione um cliente da lista.', 'r'); acCliente.focus(); return false; }
+      const vValor = Validators.valor(inp.valor.value);
+      if (!vValor.ok) { UI.toast(vValor.erro, 'r'); inp.valor.classList.add('input-erro'); return false; }
+      const vRec = Validators.valor(inp.valorRecebido.value, { obrigatorio: false, min: 0 });
+      if (!vRec.ok) { UI.toast('Valor recebido: ' + vRec.erro, 'r'); inp.valorRecebido.classList.add('input-erro'); return false; }
+      if (vRec.value > vValor.value) { UI.toast('Valor recebido não pode exceder o valor do título.', 'r'); return false; }
+      const vPer = Validators.periodoCoerente(inp.emissao.value, inp.vencimento.value);
+      if (!vPer.ok) { UI.toast(vPer.erro, 'r'); return false; }
+      const status = vRec.value >= vValor.value ? 'pago' : vRec.value > 0 ? 'parcial' : 'aberto';
+      const payload = { id: t?.id || DB.id(), clienteId: acCliente.value, documento: inp.documento.value, emissao: vPer.emissao, vencimento: vPer.vencimento, valor: vValor.value, valorRecebido: vRec.value, status, observacao: inp.observacao.value };
       DB.set(s => { if (t) s.titulosReceber = s.titulosReceber.map(x => x.id === t.id ? payload : x); else s.titulosReceber.push(payload); });
+      UI.toast(t ? 'Título atualizado.' : 'Título cadastrado.', 'v');
     });
   }
 
@@ -349,7 +580,7 @@ const Views = (() => {
     const saldo = (+t.valor) - (+t.valorRecebido || 0);
     const body = el('div');
     const inp = {
-      valor: el('input', { type: 'number', step: '0.01', class: 'input', value: saldo }),
+      valor: el('input', { type: 'text', inputmode: 'decimal', class: 'input', value: saldo }),
       data: el('input', { type: 'date', class: 'input', value: today() })
     };
     body.appendChild(el('div', {}, [field(`Saldo atual: ${BRL(saldo)}. Valor a baixar:`, inp.valor), field('Data do recebimento', inp.data)]));
@@ -393,8 +624,8 @@ const Views = (() => {
     v.appendChild(el('div', { class: 'flex justify-between items-center' }, [
       el('div', { class: 'text-sm text-slate-600' }, `Total pendente: ${BRL(total)} · Próximos 7 dias: ${BRL(pressao)}`),
       el('div', { class: 'flex gap-2' }, [
-        can('editar') ? el('button', { class: 'btn btn-s', onclick: () => openImportCadastros(st, 'fornecedores') }, 'Importar fornecedores') : null,
-        can('editar') ? el('button', { class: 'btn btn-s', onclick: () => openFornecedor(st) }, '+ Fornecedor') : null,
+        // "+ Fornecedor" e "Importar fornecedores" removidos: agora ficam em Menu > Fornecedores
+        // (e o "+ Cadastrar novo" inline no autocomplete do "+ Título").
         can('editar') ? el('button', { class: 'btn btn-p', onclick: () => openTituloPagar(st) }, '+ Título') : null
       ].filter(Boolean))
     ]));
@@ -413,15 +644,18 @@ const Views = (() => {
         el('td', {}, fm[t.fornecedorId]?.nome || '—'),
         el('td', {}, t.documento || '—'),
         el('td', {}, t.categoria || '—'),
-        el('td', {}, t.vencimento + (atraso ? ' ⚠' : '')),
+        el('td', {}, fmtDate(t.vencimento) + (atraso ? ' ⚠' : '')),
         el('td', {}, BRL(t.valor)),
         el('td', {}, badge(t.prioridade, sevP)),
-        el('td', {}, t.pago ? badge('pago', 'v') : atraso ? badge('atrasado', 'r') : badge('pendente', 'a')),
+        el('td', {}, t.cancelado ? badge('cancelado', 'r') : t.pago ? badge('pago', 'v') : atraso ? badge('atrasado', 'r') : badge('pendente', 'a')),
         el('td', {}, el('div', { class: 'flex gap-1' }, [
-          (t.pago || !can('pagar')) ? null : el('button', { class: 'btn btn-p', onclick: () => openPagamento(st, t) }, 'Pagar'),
+          (t.pago || t.cancelado || !can('pagar')) ? null : el('button', { class: 'btn btn-p', onclick: () => openPagamento(st, t) }, 'Pagar'),
           el('button', { class: 'btn btn-s', onclick: () => openAnexos(st, t.id, 'pagar') }, '📎' + (((st.anexos || {})[t.id] || []).length || '')),
-          el('button', { class: 'btn btn-s', onclick: () => openTituloPagar(st, t) }, 'Editar'),
-          el('button', { class: 'btn btn-d', onclick: () => confirmar('Excluir título?', () => DB.set(s => { s.titulosPagar = s.titulosPagar.filter(x => x.id !== t.id); })) }, '×')
+          t.cancelado ? null : el('button', { class: 'btn btn-s', onclick: () => openTituloPagar(st, t) }, 'Editar'),
+          can('cancelar') && !t.pago && !t.cancelado ? el('button', { class: 'btn btn-d', onclick: () => UI.pedirMotivo({ titulo: 'Cancelar título a pagar' }, (motivo) => {
+            const r = DB.cancelarTituloPagar(t.id, motivo);
+            if (!r.ok) UI.toast(r.erro, 'r'); else UI.toast('Título cancelado.', 'v');
+          }) }, 'Cancelar') : null
         ].filter(Boolean)))
       ]));
     });
@@ -429,37 +663,154 @@ const Views = (() => {
     v.appendChild(el('div', { class: 'card p-0 overflow-hidden' }, tbl));
   }
 
-  function openFornecedor(st, f = null) {
-    const data = f || { nome: '', categoria: '', condicao: '', criticidade: 'normal' };
+  function openFornecedor(st, f = null, opts = {}) {
+    const data = f || {
+      nome: opts.preNome || '', razaoSocial: '', documento: '', ie: '',
+      telefone: '', email: '', contato: '',
+      cidade: '', estado: '', endereco: '', bairro: '', cep: '',
+      banco: '', agencia: '', conta: '',
+      categoria: '', condicao: '', criticidade: 'normal',
+      tipoAtividade: '', tags: ''
+    };
     const body = el('div');
     const inp = {
       nome: el('input', { class: 'input', value: data.nome }),
-      categoria: el('input', { class: 'input', value: data.categoria }),
-      condicao: el('input', { class: 'input', value: data.condicao }),
-      criticidade: el('select', { class: 'select' }, ['critico', 'normal', 'opcional'].map(r => el('option', { value: r }, r)))
+      razaoSocial: el('input', { class: 'input', value: data.razaoSocial || '' }),
+      documento: el('input', { class: 'input', value: data.documento || '' }),
+      ie: el('input', { class: 'input', value: data.ie || '' }),
+      telefone: el('input', { class: 'input', value: data.telefone || '' }),
+      email: el('input', { type: 'email', class: 'input', value: data.email || '' }),
+      contato: el('input', { class: 'input', value: data.contato || '' }),
+      cidade: el('input', { class: 'input', value: data.cidade || '' }),
+      estado: el('input', { class: 'input', value: data.estado || '', placeholder: 'UF', maxlength: 2 }),
+      endereco: el('input', { class: 'input', value: data.endereco || '' }),
+      bairro: el('input', { class: 'input', value: data.bairro || '' }),
+      cep: el('input', { class: 'input', value: data.cep || '' }),
+      banco: el('input', { class: 'input', value: data.banco || '' }),
+      agencia: el('input', { class: 'input', value: data.agencia || '' }),
+      conta: el('input', { class: 'input', value: data.conta || '' }),
+      categoria: el('input', { class: 'input', value: data.categoria || '', placeholder: 'Ex.: Insumos, Aluguel' }),
+      condicao: el('input', { class: 'input', value: data.condicao || '', placeholder: 'Ex.: 30d, 30/60/90' }),
+      criticidade: el('select', { class: 'select' }, ['critico', 'normal', 'opcional'].map(r => el('option', { value: r }, r))),
+      tipoAtividade: el('input', { class: 'input', value: data.tipoAtividade || '' }),
+      tags: el('input', { class: 'input', value: data.tags || '' })
     };
     inp.criticidade.value = data.criticidade;
+
+    body.appendChild(secao('Identificação'));
     body.appendChild(el('div', { class: 'grid grid-cols-2 gap-3' }, [
-      field('Nome', inp.nome), field('Categoria', inp.categoria),
-      field('Condição de pagamento', inp.condicao), field('Criticidade', inp.criticidade)
+      field('Nome', inp.nome), field('Razão social', inp.razaoSocial),
+      field('CNPJ/CPF', inp.documento), field('Inscrição Estadual', inp.ie)
     ]));
+
+    body.appendChild(secao('Contato'));
+    body.appendChild(el('div', { class: 'grid grid-cols-3 gap-3' }, [
+      field('Telefone', inp.telefone), field('E-mail', inp.email),
+      field('Pessoa de contato', inp.contato)
+    ]));
+
+    body.appendChild(secao('Endereço'));
+    body.appendChild(el('div', { class: 'grid grid-cols-2 gap-3' }, [
+      field('Cidade', inp.cidade), field('Estado (UF)', inp.estado),
+      field('Endereço', inp.endereco), field('Bairro', inp.bairro),
+      field('CEP', inp.cep)
+    ]));
+
+    body.appendChild(secao('Dados bancários (para pagamento)'));
+    body.appendChild(el('div', { class: 'grid grid-cols-3 gap-3' }, [
+      field('Banco', inp.banco), field('Agência', inp.agencia), field('Conta', inp.conta)
+    ]));
+
+    body.appendChild(secao('Comercial'));
+    body.appendChild(el('div', { class: 'grid grid-cols-3 gap-3' }, [
+      field('Categoria', inp.categoria),
+      field('Condição de pagamento', inp.condicao),
+      field('Criticidade', inp.criticidade),
+      field('Tipo de atividade', inp.tipoAtividade),
+      field('Tags', inp.tags)
+    ]));
+
     modal(f ? 'Editar fornecedor' : 'Novo fornecedor', body, () => {
-      if (!inp.nome.value.trim()) { alert('Nome obrigatório.'); return false; }
-      const payload = { id: f?.id || DB.id(), nome: inp.nome.value.trim(), categoria: inp.categoria.value, condicao: inp.condicao.value, criticidade: inp.criticidade.value };
+      const nomeVal = String(inp.nome.value || '').trim();
+      if (!nomeVal) { UI.toast('Nome é obrigatório.', 'r'); inp.nome.classList.add('input-erro'); return false; }
+      // Validação suave para documento e email (aceita vazio)
+      let docFinal = '';
+      const docVal = String(inp.documento.value || '').trim();
+      if (docVal) {
+        const vDoc = Validators.documento(docVal);
+        if (!vDoc.ok) { UI.toast('CNPJ/CPF: ' + vDoc.erro, 'r'); inp.documento.classList.add('input-erro'); return false; }
+        docFinal = vDoc.value;
+        // Bloqueia duplicidade pelo documento normalizado
+        const docKey = String(docFinal).replace(/\D/g, '');
+        if (docKey) {
+          const dup = (st.fornecedores || []).find(x => x.id !== (f?.id) && String(x.documento || '').replace(/\D/g, '') === docKey);
+          if (dup) {
+            UI.toast(`Já existe um fornecedor com este CNPJ/CPF: "${dup.nome}". Ajuste o cadastro existente em vez de criar duplicado.`, 'r');
+            inp.documento.classList.add('input-erro');
+            return false;
+          }
+        }
+      }
+      let emailFinal = '';
+      const emailVal = String(inp.email.value || '').trim();
+      if (emailVal) {
+        const vEmail = Validators.email(emailVal);
+        if (!vEmail.ok) { UI.toast('E-mail: ' + vEmail.erro, 'r'); inp.email.classList.add('input-erro'); return false; }
+        emailFinal = vEmail.value;
+      }
+      const payload = {
+        id: f?.id || DB.id(),
+        nome: nomeVal,
+        razaoSocial: String(inp.razaoSocial.value || '').trim(),
+        documento: docFinal,
+        ie: String(inp.ie.value || '').trim(),
+        telefone: String(inp.telefone.value || '').trim(),
+        email: emailFinal,
+        contato: String(inp.contato.value || '').trim(),
+        cidade: String(inp.cidade.value || '').trim(),
+        estado: String(inp.estado.value || '').trim().toUpperCase(),
+        endereco: String(inp.endereco.value || '').trim(),
+        bairro: String(inp.bairro.value || '').trim(),
+        cep: String(inp.cep.value || '').trim(),
+        banco: String(inp.banco.value || '').trim(),
+        agencia: String(inp.agencia.value || '').trim(),
+        conta: String(inp.conta.value || '').trim(),
+        categoria: String(inp.categoria.value || '').trim(),
+        condicao: String(inp.condicao.value || '').trim(),
+        criticidade: inp.criticidade.value,
+        tipoAtividade: String(inp.tipoAtividade.value || '').trim(),
+        tags: String(inp.tags.value || '').trim()
+      };
       DB.set(s => { if (f) s.fornecedores = s.fornecedores.map(x => x.id === f.id ? payload : x); else s.fornecedores.push(payload); });
+      UI.toast(f ? 'Fornecedor atualizado.' : 'Fornecedor cadastrado.', 'v');
+      if (typeof opts.onSaved === 'function') { try { opts.onSaved(payload); } catch (e) { console.error(e); } }
     });
   }
 
   function openTituloPagar(st, t = null) {
     if (!st.fornecedores.length) { alert('Cadastre um fornecedor primeiro.'); return; }
-    const data = t || { fornecedorId: st.fornecedores[0].id, documento: '', competencia: today(), vencimento: today(), valor: 0, categoria: st.categorias.saida[0], prioridade: 'obrigatorio', pago: false, observacao: '' };
+    const data = t || { fornecedorId: '', documento: '', competencia: today(), vencimento: today(), valor: 0, categoria: st.categorias.saida[0], prioridade: 'obrigatorio', pago: false, observacao: '' };
     const body = el('div');
+    const acFornecedor = UI.autocomplete({
+      items: st.fornecedores,
+      getLabel: f => f.nome,
+      getMeta: f => [f.documento, f.cidade, f.categoria].filter(Boolean).join(' · '),
+      getSearch: f => `${f.nome} ${f.razaoSocial || ''} ${f.documento || ''} ${f.cidade || ''} ${f.categoria || ''}`,
+      placeholder: 'Buscar fornecedor por nome ou CNPJ...',
+      initialId: data.fornecedorId,
+      createLabel: 'Cadastrar novo fornecedor',
+      onCreate: (q) => {
+        openFornecedor(DB.get(), null, {
+          preNome: q,
+          onSaved: (novo) => { acFornecedor.setValue(novo.id); }
+        });
+      }
+    });
     const inp = {
-      fornecedorId: el('select', { class: 'select' }, st.fornecedores.map(f => el('option', { value: f.id }, f.nome))),
       documento: el('input', { class: 'input', value: data.documento }),
       competencia: el('input', { type: 'date', class: 'input', value: data.competencia }),
       vencimento: el('input', { type: 'date', class: 'input', value: data.vencimento }),
-      valor: el('input', { type: 'number', step: '0.01', class: 'input', value: data.valor }),
+      valor: el('input', { type: 'text', inputmode: 'decimal', class: 'input', value: fmtVal(data.valor) }),
       categoria: el('select', { class: 'select' }, st.categorias.saida.map(c => el('option', { value: c }, c))),
       prioridade: el('select', { class: 'select' }, [
         el('option', { value: 'obrigatorio' }, 'Obrigatório'),
@@ -467,22 +818,25 @@ const Views = (() => {
         el('option', { value: 'discricionario' }, 'Discricionário')
       ])
     };
-    inp.fornecedorId.value = data.fornecedorId;
     inp.categoria.value = data.categoria;
     inp.prioridade.value = data.prioridade;
     inp.observacao = el('textarea', { class: 'input', rows: 2 }, data.observacao || '');
     body.appendChild(el('div', { class: 'grid grid-cols-2 gap-3' }, [
-      field('Fornecedor', inp.fornecedorId), field('Documento', inp.documento),
+      field('Fornecedor', acFornecedor.element), field('Documento', inp.documento),
       field('Competência', inp.competencia), field('Vencimento', inp.vencimento),
       field('Valor (R$)', inp.valor), field('Categoria', inp.categoria),
       field('Prioridade', inp.prioridade)
     ]));
     body.appendChild(field('Observação', inp.observacao));
     modal(t ? 'Editar título a pagar' : 'Novo título a pagar', body, () => {
-      const valor = +inp.valor.value || 0;
-      if (!valor) { alert('Valor obrigatório.'); return false; }
-      const payload = { id: t?.id || DB.id(), fornecedorId: inp.fornecedorId.value, documento: inp.documento.value, competencia: inp.competencia.value, vencimento: inp.vencimento.value, valor, categoria: inp.categoria.value, prioridade: inp.prioridade.value, pago: t?.pago || false, dataPagamento: t?.dataPagamento, observacao: inp.observacao.value };
+      if (!acFornecedor.value) { UI.toast('Selecione um fornecedor da lista.', 'r'); acFornecedor.focus(); return false; }
+      const vValor = Validators.valor(inp.valor.value);
+      if (!vValor.ok) { UI.toast(vValor.erro, 'r'); inp.valor.classList.add('input-erro'); return false; }
+      const vPer = Validators.periodoCoerente(inp.competencia.value, inp.vencimento.value);
+      if (!vPer.ok) { UI.toast(vPer.erro, 'r'); return false; }
+      const payload = { id: t?.id || DB.id(), fornecedorId: acFornecedor.value, documento: inp.documento.value, competencia: vPer.emissao || inp.competencia.value, vencimento: vPer.vencimento, valor: vValor.value, categoria: inp.categoria.value, prioridade: inp.prioridade.value, pago: t?.pago || false, dataPagamento: t?.dataPagamento, observacao: inp.observacao.value };
       DB.set(s => { if (t) s.titulosPagar = s.titulosPagar.map(x => x.id === t.id ? payload : x); else s.titulosPagar.push(payload); });
+      UI.toast(t ? 'Título atualizado.' : 'Título cadastrado.', 'v');
     });
   }
 
@@ -574,10 +928,10 @@ const Views = (() => {
     const body = el('div');
     const inp = {
       nome: el('input', { class: 'input', value: data.nome }),
-      preco: el('input', { type: 'number', step: '0.01', class: 'input', value: data.preco }),
-      imposto: el('input', { type: 'number', step: '0.01', class: 'input', value: data.imposto }),
-      custoVariavel: el('input', { type: 'number', step: '0.01', class: 'input', value: data.custoVariavel }),
-      comissao: el('input', { type: 'number', step: '0.01', class: 'input', value: data.comissao }),
+      preco: el('input', { type: 'text', inputmode: 'decimal', class: 'input', value: data.preco }),
+      imposto: el('input', { type: 'text', inputmode: 'decimal', class: 'input', value: data.imposto }),
+      custoVariavel: el('input', { type: 'text', inputmode: 'decimal', class: 'input', value: data.custoVariavel }),
+      comissao: el('input', { type: 'text', inputmode: 'decimal', class: 'input', value: data.comissao }),
       volume: el('input', { type: 'number', class: 'input', value: data.volume })
     };
     body.appendChild(el('div', { class: 'grid grid-cols-2 gap-3' }, [
@@ -597,13 +951,13 @@ const Views = (() => {
     const v = document.getElementById('view'); v.innerHTML = '';
     const inp = {
       nome: el('input', { class: 'input', value: st.empresa.nome }),
-      caixaInicial: el('input', { type: 'number', step: '0.01', class: 'input', value: st.empresa.caixaInicial }),
-      caixaMinimo: el('input', { type: 'number', step: '0.01', class: 'input', value: st.parametros.caixaMinimo }),
+      caixaInicial: el('input', { type: 'text', inputmode: 'decimal', class: 'input', value: st.empresa.caixaInicial }),
+      caixaMinimo: el('input', { type: 'text', inputmode: 'decimal', class: 'input', value: st.parametros.caixaMinimo }),
       metaMargemPct: el('input', { type: 'number', step: '0.1', class: 'input', value: st.parametros.metaMargemPct }),
       limiteInadimplenciaPct: el('input', { type: 'number', step: '0.1', class: 'input', value: st.parametros.limiteInadimplenciaPct }),
-      custosFixosMensais: el('input', { type: 'number', step: '0.01', class: 'input', value: st.parametros.custosFixosMensais }),
-      vendasMediaDiaria: el('input', { type: 'number', step: '0.01', class: 'input', value: st.parametros.vendasMediaDiaria }),
-      estoqueAtual: el('input', { type: 'number', step: '0.01', class: 'input', value: st.parametros.estoqueAtual }),
+      custosFixosMensais: el('input', { type: 'text', inputmode: 'decimal', class: 'input', value: st.parametros.custosFixosMensais }),
+      vendasMediaDiaria: el('input', { type: 'text', inputmode: 'decimal', class: 'input', value: st.parametros.vendasMediaDiaria }),
+      estoqueAtual: el('input', { type: 'text', inputmode: 'decimal', class: 'input', value: st.parametros.estoqueAtual }),
       diasAtrasoRisco: el('input', { type: 'number', class: 'input', value: st.parametros.diasAtrasoRisco })
     };
 
@@ -936,9 +1290,37 @@ const Views = (() => {
 
   // ================= CONCILIAÇÃO BANCÁRIA =================
   let ofxTxs = [];
+
+  // Persistencia do extrato OFX no estado compartilhado (Supabase) — todos os
+  // usuarios da empresa veem o mesmo extrato importado e o progresso da conciliacao.
+  function salvarOfxTxs() {
+    try {
+      DB.set(s => {
+        s.ofxConciliacao = { conta: ofxConta, txs: ofxTxs, atualizadoEm: new Date().toISOString() };
+      });
+    } catch(e) { console.error('salvarOfxTxs:', e); }
+  }
+  function carregarOfxTxs() {
+    try {
+      const st = DB.get();
+      const d = st && st.ofxConciliacao;
+      if (d && Array.isArray(d.txs) && d.txs.length) {
+        ofxTxs = d.txs;
+        if (d.conta) ofxConta = d.conta;
+      }
+    } catch(e) {}
+  }
+  function limparOfxTxs() {
+    ofxTxs = [];
+    try {
+      DB.set(s => { s.ofxConciliacao = null; });
+    } catch(e) {}
+  }
+
   let ofxConta = 'principal';
   function conciliacao(st) {
     const v = document.getElementById('view'); v.innerHTML = '';
+    if (!ofxTxs.length) carregarOfxTxs();
 
     const ativas = (st.contas || []).filter(c => c.ativa !== false);
     if (!ativas.find(c => c.id === ofxConta)) ofxConta = ativas[0]?.id || 'principal';
@@ -952,6 +1334,7 @@ const Views = (() => {
       r.onload = () => {
         try {
           ofxTxs = f.name.toLowerCase().endsWith('.csv') ? parseExtratoCSV(r.result) : OFX.parse(r.result);
+          salvarOfxTxs();
         } catch { ofxTxs = []; alert('Falha ao ler extrato.'); }
         conciliacao(DB.get());
       };
@@ -969,10 +1352,12 @@ const Views = (() => {
 
     if (!ofxTxs.length) return;
 
-    const previstos = st.movimentos.filter(m => m.status === 'previsto');
+    // Procura match em previstos E em realizados que ainda nao foram conciliados via OFX.
+    // Isso evita duplicatas quando o usuario ja deu baixa manual antes do import do OFX.
+    const candidatos = (st.movimentos || []).filter(m => !m.cancelado && m.origem !== 'ofx' && m.origem !== 'ofx-lote');
     const idsConciliados = new Set();
     const linhas = ofxTxs.map(tx => {
-      const match = OFX.match(tx, previstos.filter(p => !idsConciliados.has(p.id)));
+      const match = OFX.match(tx, candidatos.filter(p => !idsConciliados.has(p.id)));
       if (match) idsConciliados.add(match.id);
       return { tx, match };
     });
@@ -981,22 +1366,50 @@ const Views = (() => {
     tbl.appendChild(el('thead', {}, el('tr', {}, ['Data', 'Descrição', 'Tipo', 'Valor', 'Match previsto?', 'Ação'].map(h => el('th', {}, h)))));
     const tbody = el('tbody');
     linhas.forEach(l => {
-      tbody.appendChild(el('tr', {}, [
-        el('td', {}, l.tx.data),
-        el('td', {}, l.tx.descricao || '—'),
+      const ehLote = isLotePagamento(l.tx);
+      const aplicado = !!(l._applied || (l.tx && l.tx._applied));
+      const acoes = [];
+      if (aplicado) {
+        acoes.push(el('span', { class: 'text-green-700 font-bold text-sm' }, '✓ aplicado'));
+      } else if (l.match) {
+        acoes.push(el('button', { class: 'btn btn-p', onclick: () => aplicarConciliacao(l) }, 'Confirmar'));
+      } else {
+        if (l.tx.tipo === 'saida') {
+          acoes.push(el('button', { class: 'btn ' + (ehLote ? 'btn-p' : 'btn-s'), onclick: () => openDecomporLote(l, ofxConta) }, ehLote ? 'Decompor lote' : 'Decompor em vários'));
+          acoes.push(el('button', { class: 'btn ' + (ehLote ? 'btn-s' : 'btn-p'), onclick: () => aplicarConciliacao(l) }, 'Lançar como saída única'));
+        } else {
+          acoes.push(el('button', { class: 'btn btn-p', onclick: () => aplicarConciliacao(l) }, 'Lançar como realizado'));
+        }
+      }
+      const tr = el('tr', {}, [
+        el('td', {}, fmtDate(l.tx.data)),
+        el('td', {}, [el('span', {}, l.tx.descricao || '—'), ehLote ? el('span', { class: 'ml-1 badge badge-a', title: 'Pagamento em lote detectado' }, 'lote') : null].filter(Boolean)),
         el('td', {}, badge(l.tx.tipo, l.tx.tipo === 'entrada' ? 'v' : 'r')),
         el('td', {}, BRL(l.tx.valor)),
-        el('td', {}, l.match ? badge(l.match.descricao, 'v') : badge('sem match', 'a')),
-        el('td', {}, el('div', { class: 'flex gap-1' }, [
-          el('button', { class: 'btn btn-p', onclick: () => aplicarConciliacao(l) }, l.match ? 'Confirmar' : 'Lançar como realizado')
-        ]))
-      ]));
+        el('td', {}, l.match
+          ? badge((l.match.status === 'realizado' ? 'já lançado: ' : 'previsto: ') + (l.match.descricao || ''), l.match.status === 'realizado' ? 'b' : 'v')
+          : badge('novo', 'a')),
+        el('td', {}, el('div', { class: 'flex gap-1 flex-wrap' }, acoes))
+      ]);
+      if (aplicado) tr.style.opacity = '0.5';
+      tbody.appendChild(tr);
     });
     tbl.appendChild(tbody);
     v.appendChild(el('div', { class: 'card p-0 overflow-hidden' }, [
       el('div', { class: 'flex justify-between items-center p-3' }, [
         el('h3', { class: 'font-semibold' }, `Transações do extrato (${linhas.length})`),
-        el('button', { class: 'btn btn-p', onclick: () => { linhas.forEach(l => aplicarConciliacao(l, true)); } }, 'Aplicar todas')
+        el('div', { class: 'flex gap-2' }, [
+        el('button', { class: 'btn btn-s', onclick: () => {
+          if (!confirm('Limpar o extrato carregado? Lançamentos já aplicados ficam preservados no fluxo de caixa.')) return;
+          limparOfxTxs(); conciliacao(DB.get());
+        } }, 'Limpar extrato'),
+        el('button', { class: 'btn btn-p', onclick: () => {
+          let n = 0;
+          linhas.forEach(l => { if (!l._applied && !l.tx._applied) { aplicarConciliacao(l, true); n++; } });
+          if (window.UI && UI.toast) UI.toast(n + ' lançamento(s) conciliado(s).', 'v');
+          conciliacao(DB.get());
+        } }, 'Aplicar todas')
+        ])
       ]),
       tbl
     ]));
@@ -1017,21 +1430,181 @@ const Views = (() => {
 
   function aplicarConciliacao(l, bulk = false) {
     if (!can('baixar') && !can('editar')) { if (!bulk) alert('Perfil sem permissão.'); return; }
+    if (l._applied) return;
     DB.set(s => {
       if (l.match) {
         const m = s.movimentos.find(x => x.id === l.match.id);
-        if (m) { m.status = 'realizado'; m.data = l.tx.data; m.origem = 'ofx'; m.contaId = ofxConta; }
+        if (m) {
+          // Se ja era realizado (baixa manual previa), so marca como conciliado.
+          // Se era previsto, vira realizado E conciliado.
+          if (m.status === 'previsto') { m.status = 'realizado'; m.data = l.tx.data; }
+          m.origem = 'ofx';
+          m.contaId = ofxConta;
+          m.conciliadoEm = new Date().toISOString();
+        }
       } else {
         s.movimentos.push({
           id: DB.id(), data: l.tx.data, descricao: l.tx.descricao || 'Extrato',
           categoria: l.tx.tipo === 'entrada' ? 'Vendas' : 'Outros',
           tipo: l.tx.tipo, natureza: 'op', status: 'realizado', valor: l.tx.valor,
-          contaId: ofxConta, origem: 'ofx'
+          contaId: ofxConta, origem: 'ofx',
+          conciliadoEm: new Date().toISOString()
         });
       }
     });
+    l._applied = true;
+    // marca a transacao do extrato como aplicada para sobreviver a re-render
+    if (l.tx) l.tx._applied = true;
     DB.log('conciliacao', `${l.tx.data} ${l.tx.descricao} ${BRL(l.tx.valor)}${l.match ? ' (match)' : ''}`);
-    if (!bulk) conciliacao(DB.get());
+    salvarOfxTxs();
+    if (!bulk) {
+      if (window.UI && UI.toast) UI.toast('Conciliado: ' + (l.tx.descricao || 'lançamento'), 'v');
+      conciliacao(DB.get());
+    }
+  }
+
+  // --- Pagamentos em lote (SISPAG, folha, etc.) ---
+  function isLotePagamento(tx) {
+    if (!tx || tx.tipo !== 'saida') return false;
+    const d = String(tx.descricao || '').toUpperCase();
+    return /SISPAG|PAGTO\s*LOTE|PAGAMENTO\s+EM\s+LOTE|PAG\s*ELETRONICO|TRANSF\s*MASSA|PAG\s*MASS|PAGTO\s*FORN|FOLHA\s*PAGTO|FOLHA\s+SAL|PAGTO\s+EM\s+MASSA|REM\s*PAGTO/.test(d);
+  }
+
+  function openDecomporLote(l, contaId) {
+    const tx = l.tx;
+    const totalLote = +tx.valor;
+    const st = DB.get();
+    // Lista os titulos a pagar em aberto, ordenados por vencimento mais proximo da data do extrato
+    const dataLote = tx.data;
+    const abertos = (st.titulosPagar || [])
+      .filter(t => !t.pago && !t.cancelado)
+      .map(t => ({ ...t, _dist: Math.abs(new Date(t.vencimento) - new Date(dataLote)) }))
+      .sort((a, b) => a._dist - b._dist);
+    if (!abertos.length) {
+      alert('Nao ha titulos a pagar em aberto para decompor.');
+      return;
+    }
+    const fornMap = {};
+    (st.fornecedores || []).forEach(f => { fornMap[f.id] = f; });
+
+    const body = el('div');
+    body.appendChild(el('div', { class: 'mb-3 p-3 bg-slate-100 dark:bg-slate-800 rounded' }, [
+      el('div', { class: 'text-xs text-slate-500 uppercase font-bold' }, 'Lancamento do extrato'),
+      el('div', { class: 'text-sm' }, [
+        el('span', { class: 'font-semibold' }, fmtDate(tx.data)),
+        el('span', {}, ' \u00b7 '),
+        el('span', {}, tx.descricao || '\u2014'),
+        el('span', {}, ' \u00b7 '),
+        el('span', { class: 'font-bold text-red-600' }, '- ' + BRL(totalLote))
+      ])
+    ]));
+
+    const inpBusca = el('input', { class: 'input mb-2', placeholder: 'Buscar por documento, fornecedor ou categoria...' });
+    body.appendChild(inpBusca);
+
+    const listaWrap = el('div', { class: 'border border-slate-200 dark:border-slate-700 rounded max-h-80 overflow-y-auto' });
+    body.appendChild(listaWrap);
+
+    const resumo = el('div', { class: 'mt-3 p-3 rounded text-sm' });
+    body.appendChild(resumo);
+
+    const selecionados = new Set();
+    function somaSelecionados() {
+      let s = 0;
+      for (const id of selecionados) {
+        const t = abertos.find(x => x.id === id);
+        if (t) s += +t.valor;
+      }
+      return s;
+    }
+    function renderResumo() {
+      const soma = somaSelecionados();
+      const diff = totalLote - soma;
+      const ok = Math.abs(diff) < 0.01;
+      resumo.innerHTML = '';
+      const cor = ok ? '#16a34a' : (diff > 0 ? '#d97706' : '#dc2626');
+      resumo.style.background = ok ? '#f0fdf4' : (diff > 0 ? '#fffbeb' : '#fef2f2');
+      resumo.style.border = '1px solid ' + cor;
+      resumo.appendChild(el('div', {}, [
+        el('span', { style: 'font-weight:600' }, selecionados.size + ' titulo(s) selecionado(s) - Soma: '),
+        el('span', { style: 'font-weight:700;color:' + cor }, BRL(soma)),
+        el('span', { style: 'margin-left:.75rem;color:' + cor }, ok ? '\u2713 Bate com o extrato' : ('Diferenca: ' + (diff > 0 ? 'faltam ' : 'sobram ') + BRL(Math.abs(diff))))
+      ]));
+    }
+    function renderLista() {
+      const q = inpBusca.value.toLowerCase().trim();
+      const tokens = q.split(/\s+/).filter(Boolean);
+      listaWrap.innerHTML = '';
+      const filtrados = abertos.filter(t => {
+        if (!tokens.length) return true;
+        const f = fornMap[t.fornecedorId];
+        const hay = ((t.documento || '') + ' ' + (t.categoria || '') + ' ' + ((f && f.nome) || '') + ' ' + ((f && f.documento) || '')).toLowerCase();
+        return tokens.every(tk => hay.includes(tk));
+      });
+      if (!filtrados.length) {
+        listaWrap.appendChild(el('div', { class: 'p-3 text-sm text-slate-500' }, 'Nenhum titulo corresponde a busca.'));
+        return;
+      }
+      filtrados.slice(0, 200).forEach(t => {
+        const f = fornMap[t.fornecedorId];
+        const ckId = 'ck-' + t.id;
+        const linha = el('label', { class: 'flex items-center gap-3 p-2 border-b border-slate-200 dark:border-slate-700 cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800' }, [
+          el('input', { type: 'checkbox', id: ckId, onchange: (e) => { if (e.target.checked) selecionados.add(t.id); else selecionados.delete(t.id); renderResumo(); } }),
+          el('div', { class: 'flex-1' }, [
+            el('div', { class: 'text-sm font-medium' }, [
+              el('span', {}, t.documento || ('Titulo ' + t.id.slice(0, 6))),
+              el('span', { class: 'ml-2 text-slate-500 font-normal' }, (f && f.nome) ? '\u00b7 ' + f.nome : '')
+            ]),
+            el('div', { class: 'text-xs text-slate-500' }, [
+              el('span', {}, 'Venc ' + fmtDate(t.vencimento)),
+              t.categoria ? el('span', {}, ' \u00b7 ' + t.categoria) : null
+            ].filter(Boolean))
+          ]),
+          el('div', { class: 'text-sm font-semibold text-red-700' }, BRL(t.valor))
+        ]);
+        listaWrap.appendChild(linha);
+        if (selecionados.has(t.id)) linha.querySelector('input').checked = true;
+      });
+    }
+    let timer = null;
+    inpBusca.oninput = () => { clearTimeout(timer); timer = setTimeout(renderLista, 200); };
+
+    renderLista();
+    renderResumo();
+
+    modal('Decompor lote em titulos a pagar', body, () => {
+      if (!selecionados.size) { alert('Selecione ao menos um titulo.'); return false; }
+      const soma = somaSelecionados();
+      const diff = totalLote - soma;
+      const ok = Math.abs(diff) < 0.01;
+      if (!ok) {
+        const msg = 'A soma dos selecionados (' + BRL(soma) + ') NAO bate com o extrato (' + BRL(totalLote) + '). Diferenca: ' + BRL(Math.abs(diff)) + '. Confirmar mesmo assim?';
+        if (!confirm(msg)) return false;
+      }
+      const loteId = (tx.fitid || DB.id()) + '-lote';
+      const ids = Array.from(selecionados);
+      DB.set(s => {
+        for (const id of ids) {
+          const t = s.titulosPagar.find(x => x.id === id);
+          if (!t || t.pago) continue;
+          t.pago = true;
+          t.dataPagamento = tx.data;
+          t.loteFitid = tx.fitid || '';
+          s.movimentos.push({
+            id: DB.id(), data: tx.data,
+            descricao: 'Pagto ' + (t.documento || 'titulo') + ' (lote ' + (tx.descricao || '').slice(0, 30) + ')',
+            categoria: t.categoria || 'Outros',
+            tipo: 'saida', natureza: 'op', status: 'realizado',
+            valor: +t.valor,
+            contaId: contaId,
+            origem: 'ofx-lote',
+            transferId: loteId
+          });
+        }
+      });
+      DB.log('conciliacao-lote', ids.length + ' titulos via lote ' + (tx.descricao || '') + ' = ' + BRL(soma));
+      conciliacao(DB.get());
+    });
   }
 
   // ================= EMPRESAS =================
@@ -1217,19 +1790,42 @@ const Views = (() => {
     const mes = dreMes ? dreMes.mes : (hoje.getMonth() + 1);
     dreMes = { ano, mes };
 
-    const meses = [];
-    for (let i = 11; i >= 0; i--) {
-      const d = new Date(ano, mes - 1 - i, 1);
-      meses.push({ ano: d.getFullYear(), mes: d.getMonth() + 1, label: d.toLocaleString('pt-BR', { month: 'short', year: '2-digit' }) });
-    }
-
-    v.appendChild(el('div', { class: 'flex gap-2 items-center flex-wrap' }, [
-      el('span', { class: 'text-sm text-slate-600' }, 'Mês:'),
-      ...meses.map(m => el('button', {
-        class: 'btn ' + (m.ano === ano && m.mes === mes ? 'btn-p' : 'btn-s'),
-        onclick: () => { dreMes = { ano: m.ano, mes: m.mes }; dre(DB.get()); }
-      }, m.label))
-    ]));
+    // Seletor de mes/ano: navegacao por ano (◀ ▶) + grade de 12 meses + atalhos
+    const NOMES_MES = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
+    const navega = (deltaAno, mesAlvo) => {
+      const novoAno = ano + deltaAno;
+      const novoMes = mesAlvo != null ? mesAlvo : mes;
+      dreMes = { ano: novoAno, mes: novoMes };
+      dre(DB.get());
+    };
+    const seletor = el('div', { class: 'card mb-4' }, [
+      el('div', { class: 'flex items-center justify-between mb-3' }, [
+        el('div', { class: 'flex items-center gap-3' }, [
+          el('button', { class: 'btn btn-s text-lg', onclick: () => navega(-1) }, '◀'),
+          el('div', { class: 'text-xl font-bold text-slate-800 dark:text-slate-100 min-w-20 text-center' }, String(ano)),
+          el('button', { class: 'btn btn-s text-lg', onclick: () => navega(1) }, '▶')
+        ]),
+        el('div', { class: 'flex gap-2' }, [
+          el('button', { class: 'btn btn-s', onclick: () => {
+            const h = new Date(); dreMes = { ano: h.getFullYear(), mes: h.getMonth() + 1 }; dre(DB.get());
+          } }, 'Mês atual'),
+          el('button', { class: 'btn btn-s', onclick: () => {
+            const h = new Date();
+            const ant = new Date(h.getFullYear(), h.getMonth() - 1, 1);
+            dreMes = { ano: ant.getFullYear(), mes: ant.getMonth() + 1 }; dre(DB.get());
+          } }, 'Mês anterior')
+        ])
+      ]),
+      el('div', { class: 'grid grid-cols-6 gap-2' }, NOMES_MES.map((nm, i) => {
+        const m = i + 1;
+        const ativo = m === mes;
+        return el('button', {
+          class: 'btn ' + (ativo ? 'btn-p' : 'btn-s') + ' py-2 text-sm font-semibold',
+          onclick: () => navega(0, m)
+        }, nm);
+      }))
+    ]);
+    v.appendChild(seletor);
 
     const d = KPI.dreGerencial(st, ano, mes);
     const linha = (label, valor, cls = '', indent = 0) =>
@@ -1339,8 +1935,8 @@ const Views = (() => {
 
     if (can('configurar')) {
       const inp = {
-        receitaMensal: el('input', { type: 'number', step: '0.01', class: 'input', value: st.metas.receitaMensal }),
-        resultadoMensal: el('input', { type: 'number', step: '0.01', class: 'input', value: st.metas.resultadoMensal }),
+        receitaMensal: el('input', { type: 'text', inputmode: 'decimal', class: 'input', value: st.metas.receitaMensal }),
+        resultadoMensal: el('input', { type: 'text', inputmode: 'decimal', class: 'input', value: st.metas.resultadoMensal }),
         margemMinPct: el('input', { type: 'number', step: '0.1', class: 'input', value: st.metas.margemMinPct }),
         inadimplenciaMaxPct: el('input', { type: 'number', step: '0.1', class: 'input', value: st.metas.inadimplenciaMaxPct })
       };
@@ -1394,20 +1990,20 @@ const Views = (() => {
     const nomesDias = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
 
     const grid = el('div', { class: 'card p-3' });
-    const header = el('div', { class: 'grid grid-cols-7 gap-2 mb-2' }, nomesDias.map(n => el('div', { class: 'text-xs font-semibold text-slate-500 text-center' }, n)));
+    const header = el('div', { class: 'grid grid-cols-7 gap-2 mb-2' }, nomesDias.map(n => el('div', { class: 'text-base font-bold text-slate-700 text-center' }, n)));
     grid.appendChild(header);
     const cells = el('div', { class: 'grid grid-cols-7 gap-2' });
-    for (let i = 0; i < offset; i++) cells.appendChild(el('div', { class: 'h-24' }, ''));
+    for (let i = 0; i < offset; i++) cells.appendChild(el('div', { class: 'h-28' }, ''));
     for (let d = 1; d <= diasMes; d++) {
       const iso = `${ano}-${String(mes).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
       const dia = mapa[iso];
       const isHoje = iso === KPI.today();
       const borda = isHoje ? 'border-blue-500 border-2' : 'border-slate-200';
-      const cell = el('div', { class: `h-24 border ${borda} rounded p-1 text-xs overflow-hidden` }, [
-        el('div', { class: 'font-semibold ' + (isHoje ? 'text-blue-600' : 'text-slate-700') }, String(d)),
-        dia ? el('div', {}, [
-          dia.receber > 0 ? el('div', { class: 'text-green-700 truncate' }, '+ ' + BRL(dia.receber)) : null,
-          dia.pagar > 0 ? el('div', { class: 'text-red-700 truncate' }, '− ' + BRL(dia.pagar)) : null
+      const cell = el('div', { class: `h-28 border ${borda} rounded p-2 text-sm overflow-hidden` }, [
+        el('div', { class: 'font-bold text-base mb-1 ' + (isHoje ? 'text-blue-600' : 'text-slate-800') }, String(d)),
+        dia ? el('div', { class: 'space-y-0.5' }, [
+          dia.receber > 0 ? el('div', { class: 'text-green-700 font-bold truncate' }, '+ ' + BRL(dia.receber)) : null,
+          dia.pagar > 0 ? el('div', { class: 'text-red-700 font-bold truncate' }, '− ' + BRL(dia.pagar)) : null
         ].filter(Boolean)) : null
       ]);
       cells.appendChild(cell);
@@ -1433,7 +2029,7 @@ const Views = (() => {
       el('td', {}, r.descricao),
       el('td', {}, badge(r.tipo, r.tipo === 'receber' ? 'v' : r.tipo === 'pagar' ? 'r' : 'g')),
       el('td', {}, r.frequencia),
-      el('td', {}, r.proxima || '—'),
+      el('td', {}, r.proxima ? fmtDate(r.proxima) : '—'),
       el('td', {}, BRL(r.valor)),
       el('td', {}, r.categoria || '—'),
       el('td', {}, r.ativa ? badge('ativa', 'v') : badge('pausada', 'g')),
@@ -1457,7 +2053,7 @@ const Views = (() => {
         el('option', { value: 'movimento' }, 'Gerar lançamento direto no caixa')
       ]),
       descricao: el('input', { class: 'input', value: data.descricao }),
-      valor: el('input', { type: 'number', step: '0.01', class: 'input', value: data.valor }),
+      valor: el('input', { type: 'text', inputmode: 'decimal', class: 'input', value: fmtVal(data.valor) }),
       categoria: el('input', { class: 'input', value: data.categoria || '' }),
       frequencia: el('select', { class: 'select' }, [
         el('option', { value: 'mensal' }, 'Mensal'),
@@ -1502,10 +2098,23 @@ const Views = (() => {
     const tbl = el('table', {});
     tbl.appendChild(el('thead', {}, el('tr', {}, ['Nome', 'Tipo', 'Saldo inicial', 'Saldo atual', 'Status', 'Ações'].map(h => el('th', {}, h)))));
     const tbody = el('tbody');
+    const fmtBanco = (c) => {
+      const partes = [];
+      if (c.banco) partes.push(c.banco);
+      if (c.agencia) partes.push('Ag ' + c.agencia);
+      if (c.conta) partes.push('Cc ' + c.conta);
+      return partes.join(' · ');
+    };
     (st.contas || []).forEach(c => {
       const saldo = KPI.saldoRealizado(st, c.id);
+      const linhaBanco = fmtBanco(c);
       tbody.appendChild(el('tr', {}, [
-        el('td', {}, c.nome),
+        el('td', {}, linhaBanco
+          ? el('div', {}, [
+              el('div', { class: 'font-medium' }, c.nome),
+              el('div', { class: 'text-xs text-slate-500' }, linhaBanco)
+            ])
+          : c.nome),
         el('td', {}, c.tipo),
         el('td', {}, BRL(c.saldoInicial)),
         el('td', { class: 'font-medium' }, BRL(saldo)),
@@ -1521,23 +2130,53 @@ const Views = (() => {
   }
 
   function openConta(st, c = null) {
-    const data = c || { nome: '', tipo: 'banco', saldoInicial: 0, ativa: true };
+    const data = c || { nome: '', tipo: 'banco', saldoInicial: 0, ativa: true, banco: '', agencia: '', conta: '' };
     const body = el('div');
     const inp = {
       nome: el('input', { class: 'input', value: data.nome }),
       tipo: el('select', { class: 'select' }, [el('option', { value: 'caixa' }, 'Caixa físico'), el('option', { value: 'banco' }, 'Conta bancária'), el('option', { value: 'poupanca' }, 'Poupança/Investimento'), el('option', { value: 'cartao' }, 'Cartão/Gateway')]),
-      saldoInicial: el('input', { type: 'number', step: '0.01', class: 'input', value: data.saldoInicial }),
-      ativa: el('select', { class: 'select' }, [el('option', { value: '1' }, 'Ativa'), el('option', { value: '0' }, 'Inativa')])
+      saldoInicial: el('input', { type: 'text', inputmode: 'decimal', class: 'input', value: data.saldoInicial }),
+      ativa: el('select', { class: 'select' }, [el('option', { value: '1' }, 'Ativa'), el('option', { value: '0' }, 'Inativa')]),
+      banco: el('input', { class: 'input', value: data.banco || '', placeholder: 'Ex.: Itaú, Bradesco, BB' }),
+      agencia: el('input', { class: 'input', value: data.agencia || '', placeholder: 'Ex.: 0123' }),
+      conta: el('input', { class: 'input', value: data.conta || '', placeholder: 'Ex.: 12345-6' })
     };
     inp.tipo.value = data.tipo;
     inp.ativa.value = data.ativa !== false ? '1' : '0';
+
     body.appendChild(el('div', { class: 'grid grid-cols-2 gap-3' }, [
       field('Nome', inp.nome), field('Tipo', inp.tipo),
       field('Saldo inicial (R$)', inp.saldoInicial), field('Status', inp.ativa)
     ]));
+
+    // Bloco bancário (some quando tipo = caixa físico)
+    const bancarioWrap = el('div', { class: 'mt-4 pt-4 border-t border-slate-200 dark:border-slate-700' }, [
+      el('div', { class: 'text-xs uppercase tracking-wide text-slate-500 mb-2 font-semibold' }, 'Dados bancários (opcional)'),
+      el('div', { class: 'grid grid-cols-3 gap-3' }, [
+        field('Banco', inp.banco),
+        field('Agência', inp.agencia),
+        field('Conta', inp.conta)
+      ])
+    ]);
+    body.appendChild(bancarioWrap);
+
+    const toggleBancario = () => { bancarioWrap.style.display = (inp.tipo.value === 'caixa') ? 'none' : ''; };
+    inp.tipo.addEventListener('change', toggleBancario);
+    toggleBancario();
+
     modal(c ? 'Editar conta' : 'Nova conta', body, () => {
       if (!inp.nome.value.trim()) { alert('Nome obrigatório.'); return false; }
-      const payload = { id: c?.id || DB.id(), nome: inp.nome.value.trim(), tipo: inp.tipo.value, saldoInicial: +inp.saldoInicial.value || 0, ativa: inp.ativa.value === '1' };
+      const isCaixa = inp.tipo.value === 'caixa';
+      const payload = {
+        id: c?.id || DB.id(),
+        nome: inp.nome.value.trim(),
+        tipo: inp.tipo.value,
+        saldoInicial: +inp.saldoInicial.value || 0,
+        ativa: inp.ativa.value === '1',
+        banco: isCaixa ? '' : inp.banco.value.trim(),
+        agencia: isCaixa ? '' : inp.agencia.value.trim(),
+        conta: isCaixa ? '' : inp.conta.value.trim()
+      };
       DB.set(s => { if (c) s.contas = s.contas.map(x => x.id === c.id ? payload : x); else s.contas.push(payload); });
     });
   }
@@ -1694,7 +2333,7 @@ const Views = (() => {
     const inp = {
       origem: el('select', { class: 'select' }, ativas.map(c => el('option', { value: c.id }, c.nome))),
       destino: el('select', { class: 'select' }, ativas.map(c => el('option', { value: c.id }, c.nome))),
-      valor: el('input', { type: 'number', step: '0.01', class: 'input', value: 0 }),
+      valor: el('input', { type: 'text', inputmode: 'decimal', class: 'input', value: 0 }),
       data: el('input', { type: 'date', class: 'input', value: today() }),
       descricao: el('input', { class: 'input', value: 'Transferência entre contas' })
     };
@@ -1775,7 +2414,7 @@ const Views = (() => {
       const diff = o - r;
       const pct = o > 0 ? (r / o * 100) : (r > 0 ? 999 : 0);
       const sev = o === 0 && r === 0 ? 'g' : pct > 100 ? 'r' : pct > 85 ? 'a' : 'v';
-      const inp = el('input', { type: 'number', step: '0.01', class: 'input', value: o, style: 'width:120px' });
+      const inp = el('input', { type: 'text', inputmode: 'decimal', class: 'input', value: o, style: 'width:120px' });
       inp.onblur = () => { if (!can('configurar')) return; DB.set(s => { s.orcamento[cat] = +inp.value || 0; }); DB.log('orcamento', `${cat}: ${BRL(+inp.value || 0)}`); };
       tbody.appendChild(el('tr', {}, [
         el('td', {}, cat),
@@ -1862,7 +2501,7 @@ const Views = (() => {
 
     const inp = {
       principal: el('input', { type: 'number', step: '100', class: 'input', value: state.principal }),
-      taxa: el('input', { type: 'number', step: '0.01', class: 'input', value: state.taxa }),
+      taxa: el('input', { type: 'text', inputmode: 'decimal', class: 'input', value: state.taxa }),
       prazo: el('input', { type: 'number', step: '1', class: 'input', value: state.prazo }),
       sistema: el('select', { class: 'select' }, [el('option', { value: 'price' }, 'Price (parcela fixa)'), el('option', { value: 'sac' }, 'SAC (amortização fixa)')])
     };
@@ -1945,7 +2584,7 @@ const Views = (() => {
     if (!movs.length) tbody.appendChild(el('tr', {}, el('td', { colspan: 5, class: 'text-center py-6 text-slate-500' }, 'Nenhum movimento identificado como sócio.')));
     movs.sort((a, b) => b.data.localeCompare(a.data)).forEach(m => {
       tbody.appendChild(el('tr', {}, [
-        el('td', {}, m.data),
+        el('td', {}, fmtDate(m.data)),
         el('td', {}, m.descricao),
         el('td', {}, m.categoria || '—'),
         el('td', {}, badge(m.tipo, m.tipo === 'entrada' ? 'v' : 'r')),
@@ -2090,87 +2729,19 @@ const Views = (() => {
   // ================= IMPOSTOS =================
   function impostos(st) {
     const v = document.getElementById('view'); v.innerHTML = '';
-
-    // Receita dos últimos 12 meses (RBT12) e receita do mês corrente (RPA)
-    const hoje = new Date();
-    const mesCorr = hoje.toISOString().slice(0, 7);
-    const rpaDefault = st.movimentos.filter(m => m.status === 'realizado' && m.tipo === 'entrada' && m.natureza === 'op' && m.data.startsWith(mesCorr)).reduce((s, m) => s + (+m.valor), 0);
-    let rbt12 = 0;
-    for (let i = 1; i <= 12; i++) {
-      const d = new Date(hoje.getFullYear(), hoje.getMonth() - i, 1);
-      const pref = d.toISOString().slice(0, 7);
-      rbt12 += st.movimentos.filter(m => m.status === 'realizado' && m.tipo === 'entrada' && m.natureza === 'op' && m.data.startsWith(pref)).reduce((s, m) => s + (+m.valor), 0);
-    }
-
-    const state = { rbt12: rbt12 || 600000, rpa: rpaDefault || 50000, anexo: 'I', tipo: 'servico' };
-    const out = el('div');
-
-    const inp = {
-      rbt12: el('input', { type: 'number', step: '100', class: 'input', value: state.rbt12 }),
-      rpa: el('input', { type: 'number', step: '100', class: 'input', value: state.rpa }),
-      anexo: el('select', { class: 'select' }, [el('option', { value: 'I' }, 'Anexo I — Comércio'), el('option', { value: 'III' }, 'Anexo III — Serviços')]),
-      tipo: el('select', { class: 'select' }, [el('option', { value: 'servico' }, 'Serviços'), el('option', { value: 'comercio' }, 'Comércio')])
-    };
-    inp.anexo.value = state.anexo; inp.tipo.value = state.tipo;
-
-    const render = () => {
-      state.rbt12 = +inp.rbt12.value || 0;
-      state.rpa = +inp.rpa.value || 0;
-      state.anexo = inp.anexo.value;
-      state.tipo = inp.tipo.value;
-
-      const sn = Impostos.simplesNacional(state.rbt12, state.rpa, state.anexo);
-      const lp = Impostos.lucroPresumido(state.rpa, state.tipo);
-      const mei = Impostos.mei(state.tipo);
-
-      const pct = (v) => state.rpa > 0 ? (v / state.rpa * 100).toFixed(2) + '%' : '—';
-      const melhor = Math.min(sn.impostoMes, lp.impostoMes);
-      const sev = v => v === melhor ? 'v' : 'g';
-
-      out.innerHTML = '';
-      out.appendChild(el('div', { class: 'grid-kpi' }, [
-        kpi('Simples Nacional', BRL(sn.impostoMes), sev(sn.impostoMes), `Alíq. efetiva ${(sn.aliqEfetiva*100).toFixed(2)}% · ${pct(sn.impostoMes)} da receita`),
-        kpi('Lucro Presumido', BRL(lp.impostoMes), sev(lp.impostoMes), `${pct(lp.impostoMes)} da receita`),
-        kpi('MEI (se elegível)', BRL(mei.impostoMes), state.rpa <= 6750 ? 'v' : 'g', 'Limite anual R$ 81.000'),
-        kpi('Economia do melhor', BRL(Math.abs(sn.impostoMes - lp.impostoMes)), 'a', sn.impostoMes < lp.impostoMes ? 'Simples é melhor aqui' : 'Lucro Presumido é melhor aqui')
-      ]));
-
-      // Detalhes Simples Nacional
-      out.appendChild(el('div', { class: 'card' }, [
-        el('h3', { class: 'font-semibold mb-2' }, 'Simples Nacional — ' + sn.detalhe),
-        el('div', { class: 'text-sm' }, `Fórmula: (RBT12 × alíq. nominal − parcela a deduzir) ÷ RBT12 = alíq. efetiva. Depois: RPA × alíq. efetiva.`)
-      ]));
-
-      // Composição LP
-      const tLP = el('table', {});
-      tLP.appendChild(el('thead', {}, el('tr', {}, ['Tributo', 'Base / Alíq', 'Valor'].map(h => el('th', {}, h)))));
-      const tbLP = el('tbody');
-      Object.entries(lp.composicao).filter(([, v]) => v > 0).forEach(([k, v]) => {
-        tbLP.appendChild(el('tr', {}, [el('td', {}, k), el('td', { class: 'text-xs text-slate-500' }, ''), el('td', {}, BRL(v))]));
-      });
-      tLP.appendChild(tbLP);
-      out.appendChild(el('div', { class: 'card p-0 overflow-hidden' }, [el('h3', { class: 'font-semibold p-3' }, 'Composição do Lucro Presumido'), tLP]));
-
-      // Aviso
-      out.appendChild(el('div', { class: 'card' }, [
-        el('h3', { class: 'font-semibold mb-2 text-amber-700' }, 'Importante'),
-        el('div', { class: 'text-sm text-slate-600' }, 'Cálculos simplificados para estimativa gerencial e apoio a decisão. Tabelas do Simples Nacional (2024, Anexos I e III) e Lucro Presumido simplificado (IRPJ/CSLL/PIS/COFINS + ISS ou ICMS médio). Sempre valide o regime tributário com seu contador antes de decisões formais.')
-      ]));
-    };
-
-    Object.values(inp).forEach(i => i.oninput = render);
-
-    v.appendChild(el('div', { class: 'card' }, [
-      el('h3', { class: 'font-semibold mb-3' }, 'Parâmetros'),
-      el('div', { class: 'grid grid-cols-2 md:grid-cols-4 gap-3' }, [
-        field('RBT12 (receita últimos 12 meses)', inp.rbt12),
-        field('RPA (receita do mês)', inp.rpa),
-        field('Anexo Simples', inp.anexo),
-        field('Atividade', inp.tipo)
-      ])
+    v.appendChild(UI.el('div', { class: 'card' }, [
+      UI.el('h3', { class: 'font-semibold text-red-700 mb-2' }, '⛔ Módulo desativado'),
+      UI.el('p', { class: 'text-sm mb-3' }, 'O módulo de cálculo de impostos foi desativado nesta versão de uso interno da CETEM Tecnologia.'),
+      UI.el('p', { class: 'text-sm mb-2' }, [
+        UI.el('strong', {}, 'Motivo: '),
+        document.createTextNode('as tabelas disponíveis no código (Simples Nacional e Lucro Presumido, referência 2024) não refletem a Reforma Tributária em curso, não consideram Fator R, ISS municipal específico ou ICMS por UF. Usar valores estimados aqui como referência de decisão carrega risco tributário real.')
+      ]),
+      UI.el('p', { class: 'text-sm mb-2' }, [
+        UI.el('strong', {}, 'Onde obter valores oficiais: '),
+        document.createTextNode('contador responsável (Gessica/Brasil Contabilidade) ou portal do Simples Nacional / e-CAC. Para decisão estratégica, peça simulação formal.')
+      ]),
+      UI.el('p', { class: 'text-xs text-slate-500 mt-4' }, 'Responsável pela decisão de desativação: time de engenharia CETEM · versão v0.5 · uso interno.')
     ]));
-    v.appendChild(out);
-    render();
   }
 
   // ================= SAZONALIDADE =================
@@ -2281,18 +2852,18 @@ const Views = (() => {
         { t: 'Caixa', render: () => el('div', {}, [
           el('h2', { class: 'text-xl font-semibold mb-3' }, '💵 Saldo atual de caixa'),
           el('p', { class: 'text-sm text-slate-600 mb-3' }, 'Informe o saldo total hoje somando todos os bancos e caixa físico. Esse será o ponto de partida.'),
-          field('Saldo total atual (R$)', (() => { const i = el('input', { type: 'number', step: '0.01', class: 'input', value: data.caixaInicial }); i.oninput = () => data.caixaInicial = +i.value || 0; return i; })())
+          field('Saldo total atual (R$)', (() => { const i = el('input', { type: 'text', inputmode: 'decimal', class: 'input', value: data.caixaInicial }); i.oninput = () => data.caixaInicial = +i.value || 0; return i; })())
         ])},
         { t: 'Margem', render: () => el('div', {}, [
           el('h2', { class: 'text-xl font-semibold mb-3' }, '📈 Custos fixos e margem'),
           el('p', { class: 'text-sm text-slate-600 mb-3' }, 'Custos fixos mensais: aluguel + folha + pró-labore + contador + sistemas + outras despesas que existem independente de venda.'),
-          field('Custos fixos mensais (R$)', (() => { const i = el('input', { type: 'number', step: '0.01', class: 'input', value: data.custosFixos }); i.oninput = () => data.custosFixos = +i.value || 0; return i; })()),
+          field('Custos fixos mensais (R$)', (() => { const i = el('input', { type: 'text', inputmode: 'decimal', class: 'input', value: data.custosFixos }); i.oninput = () => data.custosFixos = +i.value || 0; return i; })()),
           field('Meta de margem de contribuição (%)', (() => { const i = el('input', { type: 'number', step: '0.1', class: 'input', value: data.metaMargem }); i.oninput = () => data.metaMargem = +i.value || 0; return i; })())
         ])},
         { t: 'Metas', render: () => el('div', {}, [
           el('h2', { class: 'text-xl font-semibold mb-3' }, '🎯 Metas'),
-          field('Caixa mínimo a manter (R$)', (() => { const i = el('input', { type: 'number', step: '0.01', class: 'input', value: data.caixaMinimo }); i.oninput = () => data.caixaMinimo = +i.value || 0; return i; })()),
-          field('Meta de receita mensal (R$)', (() => { const i = el('input', { type: 'number', step: '0.01', class: 'input', value: data.metaReceita }); i.oninput = () => data.metaReceita = +i.value || 0; return i; })())
+          field('Caixa mínimo a manter (R$)', (() => { const i = el('input', { type: 'text', inputmode: 'decimal', class: 'input', value: data.caixaMinimo }); i.oninput = () => data.caixaMinimo = +i.value || 0; return i; })()),
+          field('Meta de receita mensal (R$)', (() => { const i = el('input', { type: 'text', inputmode: 'decimal', class: 'input', value: data.metaReceita }); i.oninput = () => data.metaReceita = +i.value || 0; return i; })())
         ])},
         { t: 'PIX', render: () => el('div', {}, [
           el('h2', { class: 'text-xl font-semibold mb-3' }, '🔑 Chave PIX (opcional)'),
@@ -2324,7 +2895,7 @@ const Views = (() => {
           ? el('button', { class: 'btn btn-p', onclick: () => { step++; render(); } }, 'Próximo')
           : el('button', { class: 'btn btn-p', onclick: () => {
               DB.set(s => {
-                s.empresa.nome = data.nome || 'Minha Empresa';
+                s.empresa.nome = data.nome || 'CETEM Engenharia';
                 s.empresa.cnpj = data.cnpj;
                 s.empresa.setor = data.setor;
                 s.empresa.caixaInicial = data.caixaInicial;
@@ -2387,7 +2958,7 @@ const Views = (() => {
         el('td', {}, chk),
         el('td', {}, t.cliente.nome || '—'),
         el('td', {}, t.documento || '—'),
-        el('td', {}, t.vencimento),
+        el('td', {}, fmtDate(t.vencimento)),
         el('td', {}, badge(t.dias + 'd', t.dias > 30 ? 'r' : t.dias > 15 ? 'a' : 'g')),
         el('td', {}, BRL(t.saldo)),
         el('td', { class: 'text-xs' }, tel || mail || '—'),
@@ -2587,7 +3158,7 @@ const Views = (() => {
       parcelas: el('input', { type: 'number', min: 2, max: 36, class: 'input', value: 3 }),
       primeiroVenc: el('input', { type: 'date', class: 'input', value: today() }),
       intervalo: el('select', { class: 'select' }, [el('option', { value: 'mensal' }, 'Mensal'), el('option', { value: 'quinzenal' }, 'Quinzenal'), el('option', { value: 'semanal' }, 'Semanal')]),
-      acrescimo: el('input', { type: 'number', step: '0.01', class: 'input', value: 0, placeholder: 'Juros/multa (R$)' })
+      acrescimo: el('input', { type: 'text', inputmode: 'decimal', class: 'input', value: 0, placeholder: 'Juros/multa (R$)' })
     };
     const preview = el('div', { class: 'card mt-3' });
     const render = () => {
@@ -2752,5 +3323,696 @@ const Views = (() => {
     });
   }
 
-  return { dashboard, fluxoCaixa, receber, pagar, margem, config, cenarios, regua, relatorios, auditoria, openImportCSV, conciliacao, empresas, benchmark, usuarios, snapshots, dre, metas, calendario, recorrencias, contas, abc, simulador, openImportCadastros, openTransferencia, orcamento, dfc, emprestimo, socios, consolidado, forecast, impostos, sazonalidade, onboarding, cobrancaLote, openAnexos, openPixQR, interacoes, openInteracao, openRenegociar, abrirRecibo, valorPorExtenso, openBulkEdit };
+  // ================= IMPORTAR BASE (JSON) =================
+  function importBase(st) {
+    const v = document.getElementById('view'); v.innerHTML = '';
+    let parsed = null;
+    let analise = null;
+    function chave(item) { return ((item.documento || '') + '|' + (item.nome || '')).trim().toLowerCase(); }
+    function analisar(data) {
+      const cliExist = new Set((st.clientes || []).map(chave));
+      const forExist = new Set((st.fornecedores || []).map(chave));
+      const cliNovos = (data.clientes || []).filter(x => x && x.nome && !cliExist.has(chave(x)));
+      const forNovos = (data.fornecedores || []).filter(x => x && x.nome && !forExist.has(chave(x)));
+      return {
+        cliNovos: cliNovos.length, cliExist: (data.clientes || []).length - cliNovos.length,
+        forNovos: forNovos.length, forExist: (data.fornecedores || []).length - forNovos.length,
+        cliNovosArr: cliNovos, forNovosArr: forNovos
+      };
+    }
+    function refresh() {
+      previewBox.innerHTML = '';
+      if (!parsed) {
+        previewBox.appendChild(el('div', { class: 'text-slate-500 text-sm' }, 'Selecione um arquivo JSON acima.'));
+        btnImportar.disabled = true;
+        btnImportar.classList.add('opacity-50', 'cursor-not-allowed');
+        btnImportar.textContent = 'Selecione um arquivo';
+        return;
+      }
+      analise = analisar(parsed);
+      previewBox.appendChild(el('div', { class: 'space-y-2' }, [
+        el('div', { class: 'text-sm font-bold' }, 'Pré-visualização'),
+        el('div', { class: 'grid grid-cols-2 gap-3' }, [
+          el('div', { class: 'card p-3' }, [
+            el('div', { class: 'text-xs text-slate-500 uppercase font-bold' }, 'Clientes'),
+            el('div', { class: 'text-2xl font-bold text-green-700 mt-1' }, '+' + analise.cliNovos),
+            el('div', { class: 'text-xs text-slate-500 mt-1' }, analise.cliExist + ' já existem (serão ignorados)')
+          ]),
+          el('div', { class: 'card p-3' }, [
+            el('div', { class: 'text-xs text-slate-500 uppercase font-bold' }, 'Fornecedores'),
+            el('div', { class: 'text-2xl font-bold text-green-700 mt-1' }, '+' + analise.forNovos),
+            el('div', { class: 'text-xs text-slate-500 mt-1' }, analise.forExist + ' já existem (serão ignorados)')
+          ])
+        ]),
+        el('div', { class: 'text-xs text-slate-500' }, 'A importação MESCLA com a base atual (não substitui). Duplicatas detectadas por CNPJ/CPF + nome.')
+      ]));
+      const total = analise.cliNovos + analise.forNovos;
+      btnImportar.disabled = total === 0;
+      btnImportar.classList.toggle('opacity-50', total === 0);
+      btnImportar.classList.toggle('cursor-not-allowed', total === 0);
+      btnImportar.textContent = total > 0 ? `Importar ${total} registro(s) novo(s)` : 'Nada para importar';
+    }
+    const fileIn = el('input', { type: 'file', accept: '.json,application/json', class: 'input' });
+    fileIn.onchange = () => {
+      const f = fileIn.files[0]; if (!f) return;
+      const r = new FileReader();
+      r.onload = () => {
+        try {
+          const data = JSON.parse(r.result);
+          if (typeof data !== 'object' || data === null) throw new Error('Formato inválido');
+          if (!Array.isArray(data.clientes) && !Array.isArray(data.fornecedores)) throw new Error('JSON precisa ter "clientes" e/ou "fornecedores" como array.');
+          parsed = { clientes: Array.isArray(data.clientes) ? data.clientes : [], fornecedores: Array.isArray(data.fornecedores) ? data.fornecedores : [] };
+          refresh();
+        } catch (e) {
+          if (window.UI && UI.toast) UI.toast('Erro lendo arquivo: ' + e.message, 'r'); else alert('Erro: ' + e.message);
+          parsed = null; refresh();
+        }
+      };
+      r.readAsText(f, 'utf-8');
+    };
+    const btnImportar = el('button', { class: 'btn btn-p opacity-50 cursor-not-allowed', disabled: true }, 'Selecione um arquivo');
+    btnImportar.onclick = () => {
+      if (!analise || (analise.cliNovos + analise.forNovos === 0)) return;
+      const msg = `Confirma a importação de ${analise.cliNovos} cliente(s) e ${analise.forNovos} fornecedor(es)?\n\nOs dados serão MESCLADOS com a base atual. Um snapshot automático será criado antes.`;
+      if (!confirm(msg)) return;
+      DB.snapshot('pre-import-base');
+      DB.set(s => {
+        s.clientes = (s.clientes || []).concat(analise.cliNovosArr.map(c => ({
+          id: c.id || DB.id(), nome: c.nome, razaoSocial: c.razaoSocial || '', documento: c.documento || '',
+          telefone: c.telefone || '', email: c.email || '', contato: c.contato || '',
+          cidade: c.cidade || '', estado: c.estado || '', endereco: c.endereco || '', bairro: c.bairro || '', cep: c.cep || '',
+          banco: c.banco || '', agencia: c.agencia || '', conta: c.conta || '',
+          ie: c.ie || '', tipoAtividade: c.tipoAtividade || '', tags: c.tags || '',
+          limite: +c.limite || 0, prazo: +c.prazo || 30, rating: c.rating || 'bom'
+        })));
+        s.fornecedores = (s.fornecedores || []).concat(analise.forNovosArr.map(f => ({
+          id: f.id || DB.id(), nome: f.nome, razaoSocial: f.razaoSocial || '', documento: f.documento || '',
+          telefone: f.telefone || '', email: f.email || '', contato: f.contato || '',
+          cidade: f.cidade || '', estado: f.estado || '', endereco: f.endereco || '', bairro: f.bairro || '', cep: f.cep || '',
+          banco: f.banco || '', agencia: f.agencia || '', conta: f.conta || '',
+          ie: f.ie || '', tipoAtividade: f.tipoAtividade || '', tags: f.tags || '',
+          categoria: f.categoria || f.tipoAtividade || 'Outros', condicao: f.condicao || '', criticidade: f.criticidade || 'normal'
+        })));
+      });
+      DB.log('import-base', `Mesclado: ${analise.cliNovos} clientes, ${analise.forNovos} fornecedores`);
+      if (window.UI && UI.toast) UI.toast('Importação concluída.', 'v');
+      importBase(DB.get());
+    };
+    const previewBox = el('div', { class: 'mt-4' });
+    v.appendChild(el('div', { class: 'card space-y-3' }, [
+      el('div', { class: 'text-sm text-slate-600' }, 'Carregue um arquivo JSON com a estrutura { clientes: [...], fornecedores: [...] }. Cada item deve ter ao menos "nome". Documentos (CNPJ/CPF) idênticos aos já cadastrados são ignorados.'),
+      el('div', { class: 'grid grid-cols-2 gap-3 mt-2' }, [
+        el('div', { class: 'card p-3' }, [
+          el('div', { class: 'text-xs text-slate-500 uppercase font-bold' }, 'Cadastrados hoje'),
+          el('div', { class: 'flex gap-4 mt-2' }, [
+            el('div', {}, [
+              el('div', { class: 'text-xs text-slate-500' }, 'Clientes'),
+              el('div', { class: 'text-2xl font-bold' }, String((st.clientes || []).length))
+            ]),
+            el('div', {}, [
+              el('div', { class: 'text-xs text-slate-500' }, 'Fornecedores'),
+              el('div', { class: 'text-2xl font-bold' }, String((st.fornecedores || []).length))
+            ])
+          ])
+        ]),
+        el('div', { class: 'card p-3' }, [
+          el('div', { class: 'text-xs text-slate-500 uppercase font-bold mb-2' }, 'Arquivo'),
+          field('JSON de cadastros', fileIn)
+        ])
+      ]),
+      previewBox,
+      el('div', { class: 'flex justify-end' }, btnImportar)
+    ]));
+    refresh();
+  }
+
+  // ================= CADASTROS: CLIENTES e FORNECEDORES =================
+  // Estado de filtro/paginacao por tela (vive enquanto a aba esta aberta).
+  let _cadFiltro = { clientes: { busca: '', uf: '', limite: 50 }, fornecedores: { busca: '', uf: '', limite: 50 } };
+
+  function _normCad(s) {
+    return String(s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  }
+
+  function _renderCad(tipo, st) {
+    const isCli = tipo === 'clientes';
+    const lista = (isCli ? st.clientes : st.fornecedores) || [];
+    const filtro = _cadFiltro[tipo];
+    const v = document.getElementById('view'); v.innerHTML = '';
+
+    // Estados disponiveis
+    const ufs = Array.from(new Set(lista.map(x => (x.estado || '').trim().toUpperCase()).filter(Boolean))).sort();
+
+    // Filtragem
+    const tokens = _normCad(filtro.busca).split(/\s+/).filter(Boolean);
+    const filtrados = lista.filter(x => {
+      if (filtro.uf && (x.estado || '').toUpperCase() !== filtro.uf) return false;
+      if (!tokens.length) return true;
+      const hay = _normCad(`${x.nome || ''} ${x.razaoSocial || ''} ${x.documento || ''} ${x.cidade || ''} ${x.email || ''} ${x.telefone || ''} ${x.tags || ''}`);
+      return tokens.every(t => hay.includes(t));
+    });
+
+    // Header com contadores e acoes
+    const header = el('div', { class: 'flex justify-between items-center flex-wrap gap-2 mb-4' }, [
+      el('div', { class: 'text-sm text-slate-600' }, [
+        el('span', { class: 'font-bold text-base text-slate-900 dark:text-slate-100' }, String(filtrados.length)),
+        el('span', {}, ' de ' + lista.length + ' ' + (isCli ? 'cliente(s)' : 'fornecedor(es)'))
+      ]),
+      el('div', { class: 'flex gap-2 flex-wrap' }, [
+        can('editar') ? el('button', { class: 'btn btn-p', onclick: () => {
+          const onSaved = () => _renderCad(tipo, DB.get());
+          if (isCli) openCliente(DB.get(), null, { onSaved }); else openFornecedor(DB.get(), null, { onSaved });
+        } }, '+ Novo ' + (isCli ? 'cliente' : 'fornecedor')) : null,
+        can('editar') ? el('button', { class: 'btn btn-s', onclick: () => openImportCadastros(DB.get(), tipo) }, 'Importar CSV') : null,
+        el('button', { class: 'btn btn-s', onclick: () => _exportCad(tipo, filtrados) }, 'Exportar CSV')
+      ].filter(Boolean))
+    ]);
+    v.appendChild(header);
+
+    // Filtros
+    const inpBusca = el('input', { class: 'input', placeholder: 'Buscar por nome, CNPJ, cidade, e-mail...', value: filtro.busca });
+    const selUf = el('select', { class: 'select' }, [el('option', { value: '' }, 'Todos os estados'), ...ufs.map(u => el('option', { value: u }, u))]);
+    selUf.value = filtro.uf;
+    let timer = null;
+    inpBusca.oninput = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        filtro.busca = inpBusca.value;
+        filtro.limite = 50;
+        _renderCad(tipo, st);
+      }, 250);
+    };
+    selUf.onchange = () => { filtro.uf = selUf.value; filtro.limite = 50; _renderCad(tipo, st); };
+
+    v.appendChild(el('div', { class: 'card mb-4' }, [
+      el('div', { class: 'grid grid-cols-3 gap-3' }, [
+        el('div', { class: 'col-span-2' }, [el('div', { class: 'text-xs font-medium text-slate-600 mb-1' }, 'Busca'), inpBusca]),
+        el('div', {}, [el('div', { class: 'text-xs font-medium text-slate-600 mb-1' }, 'Estado (UF)'), selUf])
+      ])
+    ]));
+
+    // Tabela
+    const visiveis = filtrados.slice(0, filtro.limite);
+    const tbl = el('table', {});
+    tbl.appendChild(el('thead', {}, el('tr', {}, ['Nome', 'CNPJ/CPF', 'Cidade/UF', 'Telefone', 'E-mail', isCli ? 'Rating' : 'Categoria', 'Ações'].map(h => el('th', {}, h)))));
+    const tbody = el('tbody');
+    if (!visiveis.length) {
+      tbody.appendChild(el('tr', {}, el('td', { colspan: 7, class: 'text-center py-6 text-slate-500' }, lista.length ? 'Nenhum resultado para os filtros aplicados.' : 'Nenhum cadastro ainda.')));
+    } else {
+      visiveis.forEach(x => {
+        const cidUf = [x.cidade, x.estado].filter(Boolean).join(' / ');
+        tbody.appendChild(el('tr', {}, [
+          el('td', {}, el('div', {}, [
+            el('div', { class: 'font-medium' }, x.nome),
+            x.razaoSocial && x.razaoSocial !== x.nome ? el('div', { class: 'text-xs text-slate-500' }, x.razaoSocial) : null
+          ].filter(Boolean))),
+          el('td', {}, x.documento || '—'),
+          el('td', {}, cidUf || '—'),
+          el('td', {}, x.telefone || '—'),
+          el('td', {}, x.email || '—'),
+          el('td', {}, isCli ? badge(x.rating || 'bom', x.rating === 'bom' ? 'v' : x.rating === 'atencao' ? 'a' : x.rating === 'risco' ? 'r' : 'g') : (x.categoria || '—')),
+          el('td', {}, el('div', { class: 'flex gap-1' }, [
+            can('editar') ? el('button', { class: 'btn btn-s', onclick: () => {
+              const onSaved = () => _renderCad(tipo, DB.get());
+              if (isCli) openCliente(DB.get(), x, { onSaved }); else openFornecedor(DB.get(), x, { onSaved });
+            } }, 'Editar') : null,
+            can('editar') ? el('button', { class: 'btn btn-d', title: 'Excluir', onclick: () => {
+              if (!confirm(`Excluir "${x.nome}"? Movimentos e títulos vinculados mantêm o vínculo histórico mas perderão a referência.`)) return;
+              DB.set(s => {
+                if (isCli) s.clientes = s.clientes.filter(i => i.id !== x.id);
+                else s.fornecedores = s.fornecedores.filter(i => i.id !== x.id);
+              });
+              UI.toast((isCli ? 'Cliente' : 'Fornecedor') + ' excluído.', 'v');
+              _renderCad(tipo, DB.get());
+            } }, '×') : null
+          ].filter(Boolean)))
+        ]));
+      });
+    }
+    tbl.appendChild(tbody);
+    v.appendChild(el('div', { class: 'card p-0 overflow-hidden' }, tbl));
+
+    // Paginacao "carregar mais"
+    if (filtrados.length > filtro.limite) {
+      const restantes = filtrados.length - filtro.limite;
+      v.appendChild(el('div', { class: 'flex justify-center mt-4' }, [
+        el('button', { class: 'btn btn-s', onclick: () => { filtro.limite += 50; _renderCad(tipo, st); } }, `Mostrar mais ${Math.min(50, restantes)} (de ${restantes} restantes)`)
+      ]));
+    }
+  }
+
+  function _exportCad(tipo, lista) {
+    const cols = ['nome','razaoSocial','documento','ie','telefone','email','contato','cidade','estado','endereco','bairro','cep','banco','agencia','conta','tipoAtividade','tags'];
+    const extras = tipo === 'clientes' ? ['limite','prazo','rating'] : ['categoria','condicao','criticidade'];
+    const all = cols.concat(extras);
+    const esc = (v) => {
+      const s = String(v == null ? '' : v).replace(/"/g, '""');
+      return /[;"\n]/.test(s) ? '"' + s + '"' : s;
+    };
+    const header = all.join(';');
+    const rows = lista.map(x => all.map(k => esc(x[k])).join(';'));
+    const csv = '\uFEFF' + header + '\n' + rows.join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = tipo + '-' + new Date().toISOString().slice(0,10) + '.csv';
+    a.click();
+    UI.toast('CSV exportado: ' + lista.length + ' registros.', 'v');
+  }
+
+  function clientes(st) { _renderCad('clientes', st); }
+  function fornecedores(st) { _renderCad('fornecedores', st); }
+
+  // ================= IMPORTAR NFS-e (Nota Carioca / ABRASF) =================
+  // Aceita .xml individuais ou .zip com varios. Faz parse, dedupe pelo numero
+  // da NF, cria titulos a receber, faz match de cliente pelo CNPJ do tomador.
+  function importNFSe(st) {
+    const v = document.getElementById('view'); v.innerHTML = '';
+
+    let nfsParsed = [];      // NFs extraidas dos XMLs
+    let preview = null;       // analise para exibir
+    const arquivosLog = [];   // mensagens de processamento por arquivo
+
+    function buildCliMap() {
+      const map = {};
+      (st.clientes || []).forEach(c => {
+        const k = String(c.documento || '').replace(/\D/g, '');
+        if (k) map[k] = c;
+      });
+      return map;
+    }
+    function buildTitMap() {
+      // dedupe por numero da NF (campo "documento" no titulo)
+      const map = {};
+      (st.titulosReceber || []).forEach(t => {
+        const k = String(t.documento || '').trim();
+        if (k) map[k] = t;
+      });
+      return map;
+    }
+
+    // Helpers tolerantes a namespaces. tagAny('Numero', root) procura
+    // qualquer tag com nome local "Numero", ignorando prefixo / xmlns.
+    function tagAny(name, root) {
+      const all = root.getElementsByTagNameNS('*', name);
+      return all && all.length ? all : root.getElementsByTagName(name);
+    }
+    function textIn(root, ...names) {
+      for (const n of names) {
+        const els = tagAny(n, root);
+        if (els && els.length && els[0].textContent && els[0].textContent.trim()) return els[0].textContent.trim();
+      }
+      return '';
+    }
+    // Acessa subno aninhado: textInPath(root, 'TomadorServico', 'CpfCnpj', 'Cnpj')
+    function textInPath(root, ...path) {
+      let cur = [root];
+      for (const tag of path) {
+        const next = [];
+        for (const c of cur) {
+          const els = tagAny(tag, c);
+          for (let i = 0; i < els.length; i++) next.push(els[i]);
+        }
+        if (!next.length) return '';
+        cur = next;
+      }
+      for (const c of cur) {
+        if (c.textContent && c.textContent.trim()) return c.textContent.trim();
+      }
+      return '';
+    }
+
+    function parseXMLString(xmlText) {
+      // Tira BOM e espaco branco inicial
+      let txt = String(xmlText || '').replace(/^\uFEFF/, '').replace(/^[\s\r\n]+/, '');
+      if (!txt.startsWith('<')) {
+        throw new Error('Arquivo nao parece ser XML (nao comeca com <)');
+      }
+      const doc = new DOMParser().parseFromString(txt, 'application/xml');
+      const perr = doc.querySelector('parsererror');
+      if (perr) {
+        const msg = perr.textContent.replace(/\s+/g, ' ').slice(0, 200);
+        throw new Error('XML mal formado: ' + msg);
+      }
+      const rootName = doc.documentElement && doc.documentElement.tagName;
+
+      // Eventos (cancelamento, CCE, etc.) — ignorados com mensagem clara
+      if (/^pedRegEvento/i.test(rootName) || tagAny('pedRegEvento', doc).length) {
+        const motivo = textIn(doc, 'xMotivo', 'xDesc') || 'evento';
+        throw new Error('Arquivo de evento (' + motivo + ') — nao e a NFS-e em si, ignorado.');
+      }
+
+      const out = [];
+
+      // ===== Padrao Nacional NFS-e (sped.fazenda.gov.br/nfse) =====
+      // Root: <NFSe> com <infNFSe> aninhado
+      const padNacNodes = Array.from(tagAny('infNFSe', doc));
+      if (padNacNodes.length) {
+        const seen = new Set();
+        for (const inf of padNacNodes) {
+          const numero = textIn(inf, 'nNFSe');
+          if (!numero || seen.has(numero)) continue;
+          seen.add(numero);
+
+          // Chave (50 digitos) vem do atributo Id ou da tag chNFSe
+          const idAttr = inf.getAttribute('Id') || '';
+          const chave = idAttr.replace(/^NFS/i, '') || textIn(inf, 'chNFSe') || '';
+
+          // Data emissao: dhEmi do DPS (mais correto) ou dhProc
+          const dhEmi = textIn(inf, 'dhEmi');
+          const dhProc = textIn(inf, 'dhProc');
+          const dataEmissao = ((dhEmi || dhProc) || '').slice(0, 10);
+
+          // Valores
+          const valoresInf = tagAny('valores', inf);
+          let vLiq = 0, vISSQN = 0, vServ = 0, vBC = 0;
+          for (let k = 0; k < valoresInf.length; k++) {
+            const v = valoresInf[k];
+            const a = parseFloat((textIn(v, 'vLiq') || '0').replace(',', '.'));
+            const b = parseFloat((textIn(v, 'vISSQN') || '0').replace(',', '.'));
+            const cc = parseFloat((textIn(v, 'vServ') || '0').replace(',', '.'));
+            const d = parseFloat((textIn(v, 'vBC') || '0').replace(',', '.'));
+            if (a) vLiq = a;
+            if (b) vISSQN = b;
+            if (cc) vServ = cc;
+            if (d) vBC = d;
+          }
+          const valorBruto = vServ || vBC || vLiq;
+          const valorLiquido = vLiq || valorBruto;
+
+          // Tomador
+          const tomaNodes = tagAny('toma', inf);
+          let cnpjTomador = '', razaoTomador = '';
+          if (tomaNodes.length) {
+            cnpjTomador = (textIn(tomaNodes[0], 'CNPJ', 'CPF') || '').replace(/\D/g, '');
+            razaoTomador = textIn(tomaNodes[0], 'xNome');
+          }
+
+          // Discriminacao
+          const discriminacao = textIn(inf, 'xDescServ', 'xTribNac', 'xTribMun');
+
+          out.push({
+            numero, dataEmissao,
+            valorBruto: valorBruto || valorLiquido,
+            valorLiquido,
+            valorIss: vISSQN,
+            cnpjTomador,
+            razaoTomador,
+            discriminacao: (discriminacao || '').slice(0, 500),
+            codVerificacao: chave  // 50-digit chave para dedupe robusto
+          });
+        }
+        return out;
+      }
+
+      // ===== ABRASF antigo (Nfse > InfNfse) — formato municipal =====
+      let nodes = Array.from(tagAny('InfNfse', doc));
+      if (!nodes.length) nodes = Array.from(tagAny('Nfse', doc));
+      if (!nodes.length) {
+        throw new Error('Nenhum InfNfse ou infNFSe encontrado (raiz: <' + (rootName || '?') + '>)');
+      }
+      const seen = new Set();
+      for (const inf of nodes) {
+        const numero = textIn(inf, 'Numero', 'NumeroNfse');
+        if (!numero || seen.has(numero)) continue;
+        seen.add(numero);
+        const dataEmissao = (textIn(inf, 'DataEmissao', 'DataEmissaoRps') || '').slice(0, 10);
+        const valorBruto = parseFloat((textIn(inf, 'ValorServicos') || '0').replace(',', '.'));
+        const valorLiquido = parseFloat((textIn(inf, 'ValorLiquidoNfse') || '0').replace(',', '.')) || valorBruto;
+        const valorIss = parseFloat((textIn(inf, 'ValorIss', 'IssRetido') || '0').replace(',', '.')) || 0;
+        const cnpjTomador = (
+          textInPath(inf, 'TomadorServico', 'CpfCnpj', 'Cnpj') ||
+          textInPath(inf, 'CpfCnpj', 'Cnpj') ||
+          textInPath(inf, 'TomadorServico', 'CpfCnpj', 'Cpf') ||
+          textInPath(inf, 'CpfCnpj', 'Cpf') ||
+          textIn(inf, 'CnpjTomador', 'CpfTomador')
+        ).replace(/\D/g, '');
+        const razaoTomador = textInPath(inf, 'TomadorServico', 'RazaoSocial') || textIn(inf, 'RazaoSocial', 'RazaoSocialTomador');
+        const discriminacao = textInPath(inf, 'Servico', 'Discriminacao') || textIn(inf, 'Discriminacao');
+        const codVerificacao = textIn(inf, 'CodigoVerificacao');
+        out.push({
+          numero, dataEmissao,
+          valorBruto: valorBruto || valorLiquido,
+          valorLiquido,
+          valorIss,
+          cnpjTomador,
+          razaoTomador,
+          discriminacao: (discriminacao || '').slice(0, 500),
+          codVerificacao
+        });
+      }
+      return out;
+    }
+
+    async function parseArquivo(file) {      return out;
+    }
+
+    async function parseArquivo(file) {
+      const nome = file.name.toLowerCase();
+      if (nome.endsWith('.zip')) {
+        if (typeof JSZip === 'undefined') throw new Error('JSZip nao carregou. Verifique sua conexao com internet.');
+        const zip = await JSZip.loadAsync(file);
+        const entries = [];
+        zip.forEach((path, entry) => {
+          if (!entry.dir && path.toLowerCase().endsWith('.xml')) entries.push({ path, entry });
+        });
+        if (!entries.length) { arquivosLog.push(`${file.name}: ZIP sem XML.`); return []; }
+        const all = [];
+        for (const { path, entry } of entries) {
+          try {
+            const text = await entry.async('text');
+            const itens = parseXMLString(text);
+            arquivosLog.push(`${file.name} > ${path}: ${itens.length} NF(s).`);
+            all.push(...itens);
+          } catch (e) {
+            arquivosLog.push(`${file.name} > ${path}: ERRO ${e.message}`);
+          }
+        }
+        return all;
+      } else if (nome.endsWith('.xml')) {
+        const text = await file.text();
+        const itens = parseXMLString(text);
+        arquivosLog.push(`${file.name}: ${itens.length} NF(s).`);
+        return itens;
+      } else {
+        arquivosLog.push(`${file.name}: ignorado (nao e .xml nem .zip).`);
+        return [];
+      }
+    }
+
+    function analisar() {
+      const cliMap = buildCliMap();
+      const titMap = buildTitMap();
+      const novos = [];     // nf nova, cliente cadastrado
+      const novosSemCliente = []; // nf nova, cliente nao cadastrado
+      const jaExistem = []; // nf ja na base
+
+      // dedupe entre os parsed
+      const seen = new Set();
+      for (const nf of nfsParsed) {
+        if (seen.has(nf.numero)) continue;
+        seen.add(nf.numero);
+
+        if (titMap[nf.numero]) { jaExistem.push(nf); continue; }
+        const cli = nf.cnpjTomador ? cliMap[nf.cnpjTomador] : null;
+        if (cli) novos.push({ ...nf, cliente: cli });
+        else novosSemCliente.push(nf);
+      }
+      return { novos, novosSemCliente, jaExistem };
+    }
+
+    function refresh() {
+      const ja = preview && preview.jaExistem.length;
+      previewBox.innerHTML = '';
+
+      if (!nfsParsed.length) {
+        previewBox.appendChild(el('div', { class: 'text-slate-500 text-sm' }, 'Selecione XMLs ou um ZIP da Nota Carioca acima.'));
+        btnImportar.disabled = true;
+        btnImportar.classList.add('opacity-50', 'cursor-not-allowed');
+        btnImportar.textContent = 'Selecione um arquivo';
+        return;
+      }
+
+      preview = analisar();
+
+      // Cards resumo
+      previewBox.appendChild(el('div', { class: 'grid grid-cols-3 gap-3 mb-3' }, [
+        el('div', { class: 'card p-3' }, [
+          el('div', { class: 'text-xs text-slate-500 uppercase font-bold' }, 'Novas (cliente OK)'),
+          el('div', { class: 'text-2xl font-bold text-green-700 mt-1' }, '+' + preview.novos.length),
+          el('div', { class: 'text-xs text-slate-500 mt-1' }, 'Cliente cadastrado · vai importar')
+        ]),
+        el('div', { class: 'card p-3' }, [
+          el('div', { class: 'text-xs text-slate-500 uppercase font-bold' }, 'Novas (sem cliente)'),
+          el('div', { class: 'text-2xl font-bold text-yellow-600 mt-1' }, '+' + preview.novosSemCliente.length),
+          el('div', { class: 'text-xs text-slate-500 mt-1' }, 'Tomador nao cadastrado · vai criar cliente')
+        ]),
+        el('div', { class: 'card p-3' }, [
+          el('div', { class: 'text-xs text-slate-500 uppercase font-bold' }, 'Ja na base'),
+          el('div', { class: 'text-2xl font-bold text-slate-500 mt-1' }, String(preview.jaExistem.length)),
+          el('div', { class: 'text-xs text-slate-500 mt-1' }, 'Mesmo numero ja importado · ignora')
+        ])
+      ]));
+
+      // Tabela com as NFs
+      const tbl = el('table', {});
+      tbl.appendChild(el('thead', {}, el('tr', {}, ['NF', 'Emissao', 'Valor', 'Tomador (CNPJ)', 'Status'].map(h => el('th', {}, h)))));
+      const tbody = el('tbody');
+      const todas = [
+        ...preview.novos.map(x => ({ ...x, _tag: 'novo' })),
+        ...preview.novosSemCliente.map(x => ({ ...x, _tag: 'sem_cliente' })),
+        ...preview.jaExistem.map(x => ({ ...x, _tag: 'existe' }))
+      ].slice(0, 100); // limita render
+      for (const r of todas) {
+        const status = r._tag === 'novo' ? badge('vai importar', 'v')
+                     : r._tag === 'sem_cliente' ? badge('cria cliente + importa', 'a')
+                     : badge('ja existe', 'g');
+        tbody.appendChild(el('tr', {}, [
+          el('td', {}, r.numero),
+          el('td', {}, fmtDate(r.dataEmissao)),
+          el('td', {}, BRL(r.valorLiquido || r.valorBruto)),
+          el('td', {}, [
+            el('div', {}, r.razaoTomador || '—'),
+            el('div', { class: 'text-xs text-slate-500' }, r.cnpjTomador || '—')
+          ]),
+          el('td', {}, status)
+        ]));
+      }
+      tbl.appendChild(tbody);
+      if (todas.length === 100) tbody.appendChild(el('tr', {}, el('td', { colspan: 5, class: 'text-center text-xs text-slate-500 py-2' }, '... (mostrando primeiras 100; importacao processa todas)')));
+      previewBox.appendChild(el('div', { class: 'card p-0 overflow-hidden' }, tbl));
+
+      // Log de arquivos
+      if (arquivosLog.length) {
+        previewBox.appendChild(el('details', { class: 'mt-3 text-xs text-slate-500' }, [
+          el('summary', { class: 'cursor-pointer font-bold' }, 'Log de processamento (' + arquivosLog.length + ')'),
+          el('pre', { class: 'mt-2 bg-slate-100 dark:bg-slate-800 rounded p-2 max-h-48 overflow-auto' }, arquivosLog.join('\n'))
+        ]));
+      }
+
+      const total = preview.novos.length + preview.novosSemCliente.length;
+      btnImportar.disabled = total === 0;
+      btnImportar.classList.toggle('opacity-50', total === 0);
+      btnImportar.classList.toggle('cursor-not-allowed', total === 0);
+      btnImportar.textContent = total > 0 ? `Importar ${total} NF(s)` : 'Nada para importar';
+    }
+
+    const fileIn = el('input', { type: 'file', accept: '.xml,.zip,application/xml,application/zip', multiple: 'true', class: 'input' });
+    fileIn.onchange = async () => {
+      const files = Array.from(fileIn.files || []);
+      if (!files.length) return;
+      arquivosLog.length = 0;
+      nfsParsed = [];
+      previewBox.innerHTML = '<div class="text-sm text-slate-500">Processando arquivos...</div>';
+      try {
+        for (const f of files) {
+          const lista = await parseArquivo(f);
+          nfsParsed.push(...lista);
+        }
+        refresh();
+      } catch (e) {
+        UI.toast('Erro: ' + e.message, 'r');
+        nfsParsed = [];
+        refresh();
+      }
+    };
+
+    const btnImportar = el('button', { class: 'btn btn-p opacity-50 cursor-not-allowed', disabled: true }, 'Selecione um arquivo');
+    btnImportar.onclick = () => {
+      if (!preview) return;
+      const total = preview.novos.length + preview.novosSemCliente.length;
+      if (total === 0) return;
+      const msg = `Confirma a importacao de ${total} NFS-e?\n\n`
+        + `- ${preview.novos.length} novo(s) com cliente ja cadastrado\n`
+        + `- ${preview.novosSemCliente.length} nova(s) que vao criar cliente automaticamente\n`
+        + `- ${preview.jaExistem.length} ja existente(s) sera(o) ignorada(s)\n\n`
+        + `Um snapshot automatico sera criado antes.`;
+      if (!confirm(msg)) return;
+      DB.snapshot('pre-import-nfse');
+      DB.set(s => {
+        const cliMap = {};
+        (s.clientes || []).forEach(c => {
+          const k = String(c.documento || '').replace(/\D/g, '');
+          if (k) cliMap[k] = c;
+        });
+        // Cria clientes faltantes
+        for (const nf of preview.novosSemCliente) {
+          if (!nf.cnpjTomador) continue;
+          if (cliMap[nf.cnpjTomador]) continue;
+          const novoCli = {
+            id: DB.id(),
+            nome: nf.razaoTomador || ('Cliente ' + nf.cnpjTomador),
+            razaoSocial: nf.razaoTomador || '',
+            documento: nf.cnpjTomador,
+            telefone: '', email: '', contato: '',
+            cidade: '', estado: '', endereco: '', bairro: '', cep: '',
+            banco: '', agencia: '', conta: '',
+            ie: '', tipoAtividade: '', tags: 'criado-via-NFS-e',
+            limite: 0, prazo: 30, rating: 'bom'
+          };
+          s.clientes.push(novoCli);
+          cliMap[nf.cnpjTomador] = novoCli;
+        }
+        // Cria os titulos
+        const todos = [...preview.novos, ...preview.novosSemCliente];
+        for (const nf of todos) {
+          const cli = nf.cnpjTomador ? cliMap[nf.cnpjTomador] : null;
+          if (!cli) continue;
+          s.titulosReceber.push({
+            id: DB.id(),
+            clienteId: cli.id,
+            documento: nf.numero,
+            emissao: nf.dataEmissao,
+            vencimento: nf.dataEmissao, // padrao: vencimento = emissao; usuario ajusta depois
+            valor: nf.valorLiquido || nf.valorBruto || 0,
+            valorRecebido: 0,
+            status: 'aberto',
+            observacao: (nf.discriminacao || '').slice(0, 500),
+            origem: 'nfs-e-import',
+            codVerificacao: nf.codVerificacao || ''
+          });
+        }
+      });
+      DB.log('import-nfse', `${total} NFS-e importadas (${preview.novosSemCliente.length} clientes novos)`);
+      UI.toast(`${total} NFS-e importadas.`, 'v');
+      // re-renderiza com state atualizado
+      importNFSe(DB.get());
+    };
+
+    const previewBox = el('div', { class: 'mt-4' });
+
+    v.appendChild(el('div', { class: 'card space-y-3' }, [
+      el('div', { class: 'text-sm text-slate-600' }, [
+        el('strong', {}, 'Como obter os XMLs: '),
+        'No painel ',
+        el('a', { href: 'https://notacarioca.rio.gov.br', target: '_blank', class: 'text-blue-600 underline' }, 'Nota Carioca'),
+        ' faca login com CNPJ + senha web. Va em "NFS-e Emitidas", filtre por periodo, e clique em "Exportar XML em lote". Salve o ZIP. Aqui voce arrasta esse ZIP (ou XMLs individuais).'
+      ]),
+      el('div', { class: 'grid grid-cols-2 gap-3' }, [
+        el('div', { class: 'card p-3' }, [
+          el('div', { class: 'text-xs text-slate-500 uppercase font-bold' }, 'Ja cadastrados'),
+          el('div', { class: 'flex gap-4 mt-2' }, [
+            el('div', {}, [
+              el('div', { class: 'text-xs text-slate-500' }, 'Clientes'),
+              el('div', { class: 'text-2xl font-bold' }, String((st.clientes || []).length))
+            ]),
+            el('div', {}, [
+              el('div', { class: 'text-xs text-slate-500' }, 'Titulos a receber'),
+              el('div', { class: 'text-2xl font-bold' }, String((st.titulosReceber || []).length))
+            ])
+          ])
+        ]),
+        el('div', { class: 'card p-3' }, [
+          el('div', { class: 'text-xs text-slate-500 uppercase font-bold mb-2' }, 'XMLs / ZIP'),
+          field('Arquivos NFS-e', fileIn)
+        ])
+      ]),
+      previewBox,
+      el('div', { class: 'flex justify-end' }, btnImportar)
+    ]));
+
+    refresh();
+  }
+
+  return { dashboard, fluxoCaixa, receber, pagar, margem, config, cenarios, regua, relatorios, auditoria, openImportCSV, conciliacao, empresas, benchmark, usuarios, snapshots, dre, metas, calendario, recorrencias, contas, abc, simulador, openImportCadastros, openTransferencia, orcamento, dfc, emprestimo, socios, consolidado, forecast, impostos, sazonalidade, onboarding, cobrancaLote, openAnexos, openPixQR, interacoes, openInteracao, openRenegociar, abrirRecibo, valorPorExtenso, openBulkEdit, importBase, clientes, fornecedores, importNFSe };
 })();
