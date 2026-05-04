@@ -1,0 +1,4 @@
+nome;categoria;condicao;criticidade
+Brasil Contabilidade;Contabilidade;mensal;critico
+Locadora Delta;Aluguel;mensal;critico
+Fornecedor Gama;Insumos;30d;normal

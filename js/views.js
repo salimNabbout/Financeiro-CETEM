@@ -2291,33 +2291,152 @@ const Views = (() => {
   }
 
   // ================= IMPORT CADASTROS =================
+  // ==================================================================
+  // Mapeamento de aliases de cabecalho para campos do schema.
+  // Aceita variacoes comuns que pessoas usam em planilhas (com/sem
+  // acento, com/sem espaco, em portugues/ingles).
+  // ==================================================================
+  const ALIAS_COLUNAS = {
+    clientes: {
+      nome:         ['nome','nomefantasia','fantasia','cliente','empresa','displayname','apelido'],
+      razaoSocial:  ['razaosocial','razao','razaosocialcompleta','nomeoficial','nomesocial'],
+      documento:    ['documento','cnpj','cpf','cnpjcpf','doc','documentofiscal','cnpjcliente'],
+      ie:           ['ie','inscricaoestadual','inscestadual','inscricaoest','iest'],
+      telefone:     ['telefone','tel','fone','celular','whatsapp','telefone1','telcomercial','telefonecomercial'],
+      email:        ['email','mail','correio','emailprincipal','emailcomercial'],
+      contato:      ['contato','pessoadecontato','responsavel','comprador','pessoacontato'],
+      cidade:       ['cidade','municipio','localidade'],
+      estado:       ['estado','uf','unidadefederativa'],
+      endereco:     ['endereco','logradouro','rua','enderecocompleto','enderecologradouro'],
+      bairro:       ['bairro'],
+      cep:          ['cep','codigopostal'],
+      banco:        ['banco'],
+      agencia:      ['agencia','ag'],
+      conta:        ['conta','contacorrente','cc'],
+      limite:       ['limite','limitecredito','limitedecredito','credito'],
+      prazo:        ['prazo','prazopadrao','dias','prazopagamento'],
+      rating:       ['rating','classificacao','classificacaocredito','risco'],
+      tipoAtividade:['tipoatividade','atividade','segmento','setor','ramo'],
+      tags:         ['tags','tag','tipo','categoria','classificacaocomercial']
+    },
+    fornecedores: {
+      nome:         ['nome','razaosocial','fantasia','fornecedor','empresa'],
+      categoria:    ['categoria','tipo','segmento'],
+      condicao:     ['condicao','condicaodepagamento','prazopagamento','prazo'],
+      criticidade:  ['criticidade','classificacao','prioridade']
+    },
+    produtos: {
+      nome:         ['nome','produto','descricao','servico','item'],
+      preco:        ['preco','precovenda','valor','precounit','precounitario'],
+      imposto:      ['imposto','impostos','aliquota','tributacao'],
+      custoVariavel:['custovariavel','custo','custounit','custounitario'],
+      comissao:     ['comissao','comissaopct','comissaopercentual'],
+      volume:       ['volume','volumemensal','quantidademensal','qtd','quantidade']
+    }
+  };
+
+  // Mapeia uma linha bruta {chaveCSV: valor} para um objeto com chaves do schema.
+  function _mapearLinhaImport(rawRow, tipo) {
+    const aliases = ALIAS_COLUNAS[tipo] || {};
+    const out = {};
+    Object.entries(rawRow).forEach(([chaveCSV, valor]) => {
+      const norm = Reports.normHeader(chaveCSV);
+      for (const [campoSchema, listaAliases] of Object.entries(aliases)) {
+        if (listaAliases.includes(norm)) {
+          out[campoSchema] = String(valor || '').trim();
+          break;
+        }
+      }
+    });
+    return out;
+  }
+
   function openImportCadastros(st, tipo) {
     const body = el('div');
-    const fileIn = el('input', { type: 'file', accept: '.csv', class: 'input' });
+    const fileIn = el('input', { type: 'file', accept: '.csv,.tsv,.txt', class: 'input' });
     const info = {
-      clientes: 'Colunas: nome;documento;telefone;email;limite;prazo;rating',
-      fornecedores: 'Colunas: nome;categoria;condicao;criticidade',
-      produtos: 'Colunas: nome;preco;imposto;custoVariavel;comissao;volume'
+      clientes: 'Colunas aceitas: nome (obrig.), razao social, cnpj/cpf, ie, telefone, email, contato, cidade, uf, endereco, bairro, cep, banco, agencia, conta, limite, prazo, rating, segmento, tipo. Separador detectado automaticamente: ; , TAB.',
+      fornecedores: 'Colunas aceitas: nome (obrig.), categoria, condicao, criticidade. Separador detectado automaticamente.',
+      produtos: 'Colunas aceitas: nome (obrig.), preco, imposto, custo variavel, comissao, volume. Separador detectado automaticamente.'
     }[tipo];
     let rows = [];
+    let mapeadas = [];
     const preview = el('div', { class: 'text-xs mt-3' });
     fileIn.onchange = () => {
       const f = fileIn.files[0]; if (!f) return;
       const r = new FileReader();
-      r.onload = () => { rows = Reports.parseCSV(r.result); preview.textContent = `Linhas lidas: ${rows.length}.`; };
+      r.onload = () => {
+        rows = Reports.parseCSV(r.result);
+        mapeadas = rows.map(row => _mapearLinhaImport(row, tipo));
+        const validas = mapeadas.filter(m => m.nome && m.nome.trim());
+        const colunasDetectadas = rows.length ? Object.keys(rows[0]).join(', ') : '(nenhuma)';
+        preview.innerHTML = '';
+        preview.appendChild(UI.el('div', {}, `Linhas lidas: ${rows.length}. Linhas com 'nome' mapeado: ${validas.length}.`));
+        preview.appendChild(UI.el('div', { class: 'mt-1 text-slate-500' }, `Colunas detectadas no arquivo: ${colunasDetectadas}`));
+        if (validas.length === 0 && rows.length > 0) {
+          preview.appendChild(UI.el('div', { class: 'mt-2 text-red-700 font-medium' },
+            'AVISO: nenhuma linha com nome valido. Confira se o arquivo tem cabecalho com pelo menos a coluna "nome" (ou variacoes como "Razao Social", "Cliente", "Empresa").'
+          ));
+        }
+      };
       r.readAsText(f, 'utf-8');
     };
-    body.appendChild(field('Arquivo CSV', fileIn));
+    body.appendChild(field('Arquivo CSV/TSV', fileIn));
     body.appendChild(el('div', { class: 'text-xs text-slate-500' }, info));
     body.appendChild(preview);
     modal(`Importar ${tipo}`, body, () => {
       if (!rows.length) { alert('Selecione um arquivo.'); return false; }
+      const validas = mapeadas.filter(m => m.nome && m.nome.trim());
+      if (!validas.length) { alert('Nenhuma linha com nome valido. Adicione cabecalho com "nome" (ou alias) e tente novamente.'); return false; }
       let n = 0;
       DB.set(s => {
-        rows.forEach(r => {
-          if (tipo === 'clientes' && r.nome) { s.clientes.push({ id: DB.id(), nome: r.nome, documento: r.documento || '', telefone: r.telefone || '', email: r.email || '', limite: Reports.parseNum(r.limite), prazo: +r.prazo || 30, rating: r.rating || 'bom' }); n++; }
-          else if (tipo === 'fornecedores' && r.nome) { s.fornecedores.push({ id: DB.id(), nome: r.nome, categoria: r.categoria || '', condicao: r.condicao || '', criticidade: r.criticidade || 'normal' }); n++; }
-          else if (tipo === 'produtos' && r.nome) { s.produtos.push({ id: DB.id(), nome: r.nome, preco: Reports.parseNum(r.preco), imposto: Reports.parseNum(r.imposto), custoVariavel: Reports.parseNum(r.custoVariavel), comissao: Reports.parseNum(r.comissao), volume: +r.volume || 0 }); n++; }
+        validas.forEach(r => {
+          if (tipo === 'clientes') {
+            s.clientes.push({
+              id: DB.id(),
+              nome: r.nome,
+              razaoSocial: r.razaoSocial || '',
+              documento: r.documento || '',
+              ie: r.ie || '',
+              telefone: r.telefone || '',
+              email: r.email || '',
+              contato: r.contato || '',
+              cidade: r.cidade || '',
+              estado: (r.estado || '').toUpperCase().slice(0, 2),
+              endereco: r.endereco || '',
+              bairro: r.bairro || '',
+              cep: r.cep || '',
+              banco: r.banco || '',
+              agencia: r.agencia || '',
+              conta: r.conta || '',
+              limite: Reports.parseNum(r.limite),
+              prazo: +(r.prazo || '').replace(/\D/g, '') || 30,
+              rating: r.rating || 'bom',
+              tipoAtividade: r.tipoAtividade || '',
+              tags: r.tags || ''
+            });
+            n++;
+          } else if (tipo === 'fornecedores') {
+            s.fornecedores.push({
+              id: DB.id(),
+              nome: r.nome,
+              categoria: r.categoria || '',
+              condicao: r.condicao || '',
+              criticidade: r.criticidade || 'normal'
+            });
+            n++;
+          } else if (tipo === 'produtos') {
+            s.produtos.push({
+              id: DB.id(),
+              nome: r.nome,
+              preco: Reports.parseNum(r.preco),
+              imposto: Reports.parseNum(r.imposto),
+              custoVariavel: Reports.parseNum(r.custoVariavel),
+              comissao: Reports.parseNum(r.comissao),
+              volume: +(r.volume || '').replace(/\D/g, '') || 0
+            });
+            n++;
+          }
         });
       });
       DB.log('import-cadastro', `${n} ${tipo} importados`);

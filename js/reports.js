@@ -18,10 +18,22 @@ const Reports = (() => {
     a.click();
   }
 
+  // Normaliza header: lowercase, sem acento, sem espaco/pontuacao -> 'razao social' vira 'razaosocial'
+  function normHeader(h) {
+    return String(h).trim().toLowerCase()
+      .replace(/\uFEFF/g, '')
+      .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-z0-9]/g, '');
+  }
+
   function parseCSV(text) {
-    // aceita ; ou , como separador; respeita aspas
+    // Detecta separador: ';' ou ',' ou '\t' (tab) - o que tem mais ocorrencias na 1a linha
     const firstLine = text.split(/\r?\n/)[0];
-    const sep = (firstLine.match(/;/g) || []).length >= (firstLine.match(/,/g) || []).length ? ';' : ',';
+    const counts = { ';': 0, ',': 0, '\t': 0 };
+    for (const ch of firstLine) { if (ch in counts) counts[ch]++; }
+    let sep = ';';
+    if (counts['\t'] > counts[';'] && counts['\t'] > counts[',']) sep = '\t';
+    else if (counts[','] > counts[';']) sep = ',';
     const rows = [];
     let cur = [], field = '', q = false;
     for (let i = 0; i < text.length; i++) {
@@ -57,5 +69,5 @@ const Reports = (() => {
     return KPI.today();
   }
 
-  return { toCSV, download, parseCSV, parseNum, parseDate };
+  return { toCSV, download, parseCSV, parseNum, parseDate, normHeader };
 })();
