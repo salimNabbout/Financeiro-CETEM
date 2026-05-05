@@ -29,7 +29,9 @@ const UI = (() => {
     const root = document.getElementById('modal-root');
     root.innerHTML = '';
     const close = () => root.innerHTML = '';
-    const bg = el('div', { class: 'modal-bg', onclick: (e) => { if (e.target === bg) close(); } });
+    // Modal NAO fecha ao clicar fora (decisao operacional 2026-05-05): evita perda
+    // de digitacao em formularios longos. So fecha via Cancelar, Salvar ou X.
+    const bg = el('div', { class: 'modal-bg' });
     const box = el('div', { class: 'modal' });
     box.appendChild(el('div', { class: 'flex justify-between items-center mb-4' }, [
       el('h2', { class: 'text-lg font-semibold' }, title),
@@ -65,7 +67,9 @@ const UI = (() => {
     const root = document.getElementById('modal-root');
     root.innerHTML = '';
     const close = () => root.innerHTML = '';
-    const bg = el('div', { class: 'modal-bg', onclick: (e) => { if (e.target === bg) close(); } });
+    // Modal NAO fecha ao clicar fora (decisao operacional 2026-05-05): evita perda
+    // de digitacao em formularios longos. So fecha via Cancelar, Salvar ou X.
+    const bg = el('div', { class: 'modal-bg' });
     const box = el('div', { class: 'modal' });
     box.appendChild(el('div', { class: 'flex justify-between items-center mb-4' }, [
       el('h2', { class: 'text-lg font-semibold text-red-700' }, titulo || 'Confirmação crítica'),
