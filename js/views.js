@@ -613,6 +613,9 @@ const Views = (() => {
   }
 
   // ================= CONTAS A PAGAR =================
+  // Filtros persistentes da tela de Contas a pagar (sobrevivem ao re-render).
+  let pagarFiltro = { centroCusto: '', contaId: '' };
+
   function pagar(st) {
     const v = document.getElementById('view'); v.innerHTML = '';
     const fm = fornecedoresMap(st);
@@ -625,19 +628,49 @@ const Views = (() => {
     v.appendChild(el('div', { class: 'flex justify-between items-center' }, [
       el('div', { class: 'text-sm text-slate-600' }, `Total pendente: ${BRL(total)} · Próximos 7 dias: ${BRL(pressao)}`),
       el('div', { class: 'flex gap-2' }, [
-        // "+ Fornecedor" e "Importar fornecedores" removidos: agora ficam em Menu > Fornecedores
-        // (e o "+ Cadastrar novo" inline no autocomplete do "+ Título").
         can('editar') ? el('button', { class: 'btn btn-p', onclick: () => openTituloPagar(st) }, '+ Título') : null
       ].filter(Boolean))
     ]));
 
+    // ---- Filtros (Centro de custo e Conta corrente) ----
+    const centrosCusto = [...new Set((st.titulosPagar || []).map(t => (t.centroCusto || '').trim()).filter(Boolean))].sort();
+    const contasAtivas = (st.contas || []).filter(c => c.ativa !== false);
+    const contasMap = Object.fromEntries(contasAtivas.map(c => [c.id, c.nome]));
+
+    const selCC = el('select', { class: 'select' }, [
+      el('option', { value: '' }, 'Todos os centros de custo'),
+      ...centrosCusto.map(cc => el('option', { value: cc }, cc))
+    ]);
+    selCC.value = pagarFiltro.centroCusto;
+    const selConta = el('select', { class: 'select' }, [
+      el('option', { value: '' }, 'Todas as contas'),
+      ...contasAtivas.map(c => el('option', { value: c.id }, c.nome + (c.tipo ? ` (${c.tipo})` : '')))
+    ]);
+    selConta.value = pagarFiltro.contaId;
+    const btnLimpar = el('button', { class: 'btn btn-s', onclick: () => {
+      pagarFiltro = { centroCusto: '', contaId: '' };
+      pagar(DB.get());
+    } }, 'Limpar filtros');
+    selCC.onchange = () => { pagarFiltro.centroCusto = selCC.value; pagar(DB.get()); };
+    selConta.onchange = () => { pagarFiltro.contaId = selConta.value; pagar(DB.get()); };
+
+    v.appendChild(el('div', { class: 'card grid grid-cols-1 md:grid-cols-3 gap-3' }, [
+      field('Centro de custo', selCC),
+      field('Conta corrente', selConta),
+      el('div', { class: 'flex items-end' }, btnLimpar)
+    ]));
+
     const tbl = el('table', {});
     tbl.appendChild(el('thead', {}, el('tr', {}, [
-      'Fornecedor', 'Documento', 'Categoria', 'Vencimento', 'Valor', 'Prioridade', 'Status', 'Ações'
+      'Fornecedor', 'Documento', 'Categoria', 'Centro de custo', 'Conta', 'Vencimento', 'Valor', 'Prioridade', 'Status', 'Ações'
     ].map(h => el('th', {}, h)))));
     const tbody = el('tbody');
-    const rows = [...st.titulosPagar].sort((a, b) => a.vencimento.localeCompare(b.vencimento));
-    if (!rows.length) tbody.appendChild(el('tr', {}, el('td', { colspan: 8, class: 'text-center py-6 text-slate-500' }, 'Sem títulos.')));
+    let rows = [...st.titulosPagar];
+    // Aplica filtros
+    if (pagarFiltro.centroCusto) rows = rows.filter(t => (t.centroCusto || '') === pagarFiltro.centroCusto);
+    if (pagarFiltro.contaId) rows = rows.filter(t => (t.contaId || '') === pagarFiltro.contaId);
+    rows.sort((a, b) => a.vencimento.localeCompare(b.vencimento));
+    if (!rows.length) tbody.appendChild(el('tr', {}, el('td', { colspan: 10, class: 'text-center py-6 text-slate-500' }, (pagarFiltro.centroCusto || pagarFiltro.contaId) ? 'Nenhum título encontrado para o filtro aplicado.' : 'Sem títulos.')));
     rows.forEach(t => {
       const atraso = !t.pago && t.vencimento < hoje;
       const sevP = t.prioridade === 'obrigatorio' ? 'r' : t.prioridade === 'negociavel' ? 'a' : 'g';
@@ -645,6 +678,8 @@ const Views = (() => {
         el('td', {}, fm[t.fornecedorId]?.nome || '—'),
         el('td', {}, t.documento || '—'),
         el('td', {}, t.categoria || '—'),
+        el('td', {}, t.centroCusto || '—'),
+        el('td', {}, contasMap[t.contaId] || '—'),
         el('td', {}, fmtDate(t.vencimento) + (atraso ? ' ⚠' : '')),
         el('td', {}, BRL(t.valor)),
         el('td', {}, badge(t.prioridade, sevP)),
