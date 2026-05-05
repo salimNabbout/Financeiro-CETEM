@@ -662,7 +662,7 @@ const Views = (() => {
 
     const tbl = el('table', {});
     tbl.appendChild(el('thead', {}, el('tr', {}, [
-      'Fornecedor', 'Documento', 'Categoria', 'Centro de custo', 'Conta', 'Vencimento', 'Valor', 'Prioridade', 'Status', 'Ações'
+      'Fornecedor', 'Nº da NF', 'Categoria', 'Centro de custo', 'Conta corrente', 'Vencimento', 'Valor', 'Status', 'Ações'
     ].map(h => el('th', {}, h)))));
     const tbody = el('tbody');
     let rows = [...st.titulosPagar];
@@ -670,10 +670,9 @@ const Views = (() => {
     if (pagarFiltro.centroCusto) rows = rows.filter(t => (t.centroCusto || '') === pagarFiltro.centroCusto);
     if (pagarFiltro.contaId) rows = rows.filter(t => (t.contaId || '') === pagarFiltro.contaId);
     rows.sort((a, b) => a.vencimento.localeCompare(b.vencimento));
-    if (!rows.length) tbody.appendChild(el('tr', {}, el('td', { colspan: 10, class: 'text-center py-6 text-slate-500' }, (pagarFiltro.centroCusto || pagarFiltro.contaId) ? 'Nenhum título encontrado para o filtro aplicado.' : 'Sem títulos.')));
+    if (!rows.length) tbody.appendChild(el('tr', {}, el('td', { colspan: 9, class: 'text-center py-6 text-slate-500' }, (pagarFiltro.centroCusto || pagarFiltro.contaId) ? 'Nenhum título encontrado para o filtro aplicado.' : 'Sem títulos.')));
     rows.forEach(t => {
       const atraso = !t.pago && t.vencimento < hoje;
-      const sevP = t.prioridade === 'obrigatorio' ? 'r' : t.prioridade === 'negociavel' ? 'a' : 'g';
       tbody.appendChild(el('tr', {}, [
         el('td', {}, fm[t.fornecedorId]?.nome || '—'),
         el('td', {}, t.documento || '—'),
@@ -682,7 +681,6 @@ const Views = (() => {
         el('td', {}, contasMap[t.contaId] || '—'),
         el('td', {}, fmtDate(t.vencimento) + (atraso ? ' ⚠' : '')),
         el('td', {}, BRL(t.valor)),
-        el('td', {}, badge(t.prioridade, sevP)),
         el('td', {}, t.cancelado ? badge('cancelado', 'r') : t.pago ? badge('pago', 'v') : atraso ? badge('atrasado', 'r') : badge('pendente', 'a')),
         el('td', {}, el('div', { class: 'flex gap-1' }, [
           (t.pago || t.cancelado || !can('pagar')) ? null : el('button', { class: 'btn btn-p', onclick: () => openPagamento(st, t) }, 'Pagar'),
