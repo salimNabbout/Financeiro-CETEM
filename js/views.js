@@ -466,23 +466,24 @@ const Views = (() => {
     modal(c ? 'Editar cliente' : 'Novo cliente', body, () => {
       const vNome = Validators.texto(inp.nome.value, { nome: 'Nome', max: 200 });
       if (!vNome.ok) { UI.toast(vNome.erro, 'r'); inp.nome.classList.add('input-erro'); return false; }
-      // Validação de documento e contato relaxada: aceita vazio ou valido
+      // Documento OBRIGATORIO e UNICO (regra acordada em 2026-05-05).
+      // Cada cliente precisa ter CNPJ ou CPF; nao pode haver dois clientes
+      // com o mesmo numero (comparacao por digitos puros, ignorando mascara).
       const docVal = String(inp.documento.value || '').trim();
-      let docFinal = '';
-      if (docVal) {
-        const vDoc = Validators.documento(docVal);
-        if (!vDoc.ok) { UI.toast('CNPJ/CPF: ' + vDoc.erro, 'r'); inp.documento.classList.add('input-erro'); return false; }
-        docFinal = vDoc.value;
-        // Bloqueia duplicidade pelo documento normalizado
-        const docKey = String(docFinal).replace(/\D/g, '');
-        if (docKey) {
-          const dup = (st.clientes || []).find(x => x.id !== (c?.id) && String(x.documento || '').replace(/\D/g, '') === docKey);
-          if (dup) {
-            UI.toast(`Já existe um cliente com este CNPJ/CPF: "${dup.nome}". Ajuste o cadastro existente em vez de criar duplicado.`, 'r');
-            inp.documento.classList.add('input-erro');
-            return false;
-          }
-        }
+      if (!docVal) {
+        UI.toast('CNPJ/CPF é obrigatório.', 'r');
+        inp.documento.classList.add('input-erro');
+        return false;
+      }
+      const vDoc = Validators.documento(docVal);
+      if (!vDoc.ok) { UI.toast('CNPJ/CPF: ' + vDoc.erro, 'r'); inp.documento.classList.add('input-erro'); return false; }
+      const docFinal = vDoc.value;
+      const docKey = String(docFinal).replace(/\D/g, '');
+      const dup = (st.clientes || []).find(x => x.id !== (c?.id) && String(x.documento || '').replace(/\D/g, '') === docKey);
+      if (dup) {
+        UI.toast(`Já existe um cliente com este CNPJ/CPF: "${dup.nome}". Ajuste o cadastro existente em vez de criar duplicado.`, 'r');
+        inp.documento.classList.add('input-erro');
+        return false;
       }
       const emailVal = String(inp.email.value || '').trim();
       let emailFinal = '';
