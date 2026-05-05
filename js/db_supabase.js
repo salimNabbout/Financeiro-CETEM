@@ -122,6 +122,23 @@ const DB = (() => {
   let resolveReady, rejectReady;
   const ready = new Promise((res, rej) => { resolveReady = res; rejectReady = rej; });
 
+  // Flag de seguranca: bloqueia save() ate o bootstrap carregar o state real
+  // do Supabase. Se save() rodar com state ainda em empty(), gravava state
+  // vazio sobre os dados do banco (bug observado em 2026-05-05).
+  let _dbReady = false;
+  let _allowEmptySave = false; // permite save de state vazio (uso intencional via reset())
+
+  // Detecta state suspeitamente vazio (todos os arrays principais zerados).
+  // Em uso real, o app raramente fica com tudo vazio simultaneamente.
+  // Se isso acontecer, abortamos o save por seguranca.
+  function _stateSuspeitamenteVazio(st) {
+    if (!st) return true;
+    const arrays = ['clientes','fornecedores','movimentos','titulosReceber','titulosPagar','contas','produtos'];
+    const totalItems = arrays.reduce((acc, k) => acc + (Array.isArray(st[k]) ? st[k].length : 0), 0);
+    // 'contas' tem default de 1 (Caixa principal). Se total <= 1, eh suspeito.
+    return totalItems <= 1;
+  }
+
   async function bootstrap() {
     try {
       loadLocalPrefs();
@@ -168,7 +185,8 @@ const DB = (() => {
         state = mergeState(empty(), row.state || {});
       }
 
-      console.log('[DB Supabase] Pronto. Empresa ativa:', meta.empresaAtivaId);
+      _dbReady = true;
+      console.log('[DB Supabase] Pronto. Empresa ativa:', meta.empresaAtivaId, '| Save habilitado.');
       resolveReady(state);
       emit();
     } catch (e) {
@@ -196,6 +214,21 @@ const DB = (() => {
   async function saveNow() {
     if (!savePending || saveInflight) return;
     if (!meta.empresaAtivaId) return;
+    // Trava 1: bloqueia save antes do bootstrap completar.
+    if (!_dbReady) {
+      console.warn('[DB Supabase] save abortado: bootstrap ainda nao completou. Estado em memoria nao foi gravado para evitar sobrescrita do banco.');
+      return;
+    }
+    // Trava 2: bloqueia save de state suspeitamente vazio (todos os arrays
+    // principais zerados). Se isso acontecer apos bootstrap OK, eh quase
+    // certamente bug ou corrompimento. Salvar sobrescreveria dados reais.
+    // Bypass: reset() seta _allowEmptySave temporariamente.
+    if (_stateSuspeitamenteVazio(state) && !_allowEmptySave) {
+      console.warn('[DB Supabase] save abortado: state esta suspeitamente vazio (todos os arrays principais zerados). Para zerar de verdade, use o botao Zerar com confirmacao em duas etapas.');
+      window.dispatchEvent(new CustomEvent('cockpit-fin-save-abortado', { detail: { motivo: 'state-vazio-suspeito' } }));
+      savePending = false; // descarta tentativa
+      return;
+    }
     saveInflight = true;
     savePending = false;
     const snapshotState = JSON.parse(JSON.stringify(state));
@@ -292,7 +325,12 @@ const DB = (() => {
     get: () => state,
     meta: () => meta,
     set: (updater) => { updater(state); save(); },
-    reset: () => { state = empty(); save(); },
+    reset: () => {
+      // reset eh acao intencional do usuario - bypassa o guard de state vazio
+      state = empty();
+      _allowEmptySave = true;
+      try { save(); } finally { setTimeout(() => { _allowEmptySave = false; }, 5000); }
+    },
     replace: (data) => {
       const v = validarSchema(data);
       if (!v.ok) throw new Error('Import invalido: ' + v.erro);
