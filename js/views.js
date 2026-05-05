@@ -2389,10 +2389,28 @@ const Views = (() => {
       if (!rows.length) { alert('Selecione um arquivo.'); return false; }
       const validas = mapeadas.filter(m => m.nome && m.nome.trim());
       if (!validas.length) { alert('Nenhuma linha com nome valido. Adicione cabecalho com "nome" (ou alias) e tente novamente.'); return false; }
+      // Helper: normaliza documento para comparacao (so digitos).
+      const normDoc = (d) => String(d || '').replace(/\D/g, '');
       let n = 0;
+      let puladosDup = 0;       // duplicidade detectada (CNPJ ja existe)
+      let puladosSemDoc = 0;    // futuro uso - manter contador para mensagem
+      const detalhesDup = [];   // lista dos nomes pulados, para o relatorio
       DB.set(s => {
+        // Conjunto de documentos JA cadastrados (para barrar duplicata com banco).
+        // Para clientes/fornecedores: comparacao por documento normalizado.
+        const arrayAlvo = tipo === 'clientes' ? (s.clientes || []) : tipo === 'fornecedores' ? (s.fornecedores || []) : null;
+        const docsExistentes = new Set();
+        if (arrayAlvo) {
+          arrayAlvo.forEach(x => { const d = normDoc(x.documento); if (d) docsExistentes.add(d); });
+        }
         validas.forEach(r => {
           if (tipo === 'clientes') {
+            const docNovo = normDoc(r.documento);
+            if (docNovo && docsExistentes.has(docNovo)) {
+              puladosDup++;
+              detalhesDup.push(r.nome);
+              return; // pula esta linha
+            }
             s.clientes.push({
               id: DB.id(),
               nome: r.nome,
@@ -2416,15 +2434,25 @@ const Views = (() => {
               tipoAtividade: r.tipoAtividade || '',
               tags: r.tags || ''
             });
+            // Adiciona ao set para barrar duplicatas DENTRO do proprio CSV
+            if (docNovo) docsExistentes.add(docNovo);
             n++;
           } else if (tipo === 'fornecedores') {
+            const docNovo = normDoc(r.documento);
+            if (docNovo && docsExistentes.has(docNovo)) {
+              puladosDup++;
+              detalhesDup.push(r.nome);
+              return;
+            }
             s.fornecedores.push({
               id: DB.id(),
               nome: r.nome,
+              documento: r.documento || '',
               categoria: r.categoria || '',
               condicao: r.condicao || '',
               criticidade: r.criticidade || 'normal'
             });
+            if (docNovo) docsExistentes.add(docNovo);
             n++;
           } else if (tipo === 'produtos') {
             s.produtos.push({
@@ -2440,8 +2468,13 @@ const Views = (() => {
           }
         });
       });
-      DB.log('import-cadastro', `${n} ${tipo} importados`);
-      alert(`${n} registros importados.`);
+      DB.log('import-cadastro', `${n} ${tipo} importados, ${puladosDup} pulados por duplicidade`);
+      let msg = `${n} registros importados.`;
+      if (puladosDup > 0) {
+        const exemplos = detalhesDup.slice(0, 5).join(', ') + (detalhesDup.length > 5 ? ', ...' : '');
+        msg += `\n\n${puladosDup} linhas foram puladas por duplicidade de CNPJ/CPF (ja existe cliente com mesmo documento):\n${exemplos}`;
+      }
+      alert(msg);
     });
   }
 
