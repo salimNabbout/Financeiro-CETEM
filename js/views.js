@@ -790,7 +790,8 @@ const Views = (() => {
 
   function openTituloPagar(st, t = null) {
     if (!st.fornecedores.length) { alert('Cadastre um fornecedor primeiro.'); return; }
-    const data = t || { fornecedorId: '', documento: '', competencia: today(), vencimento: today(), valor: 0, categoria: st.categorias.saida[0], prioridade: 'obrigatorio', pago: false, observacao: '' };
+    // 'documento' no schema antigo = numero da NF agora. Mantemos compat com dados existentes.
+    const data = t || { fornecedorId: '', documento: '', numeroPedido: '', centroCusto: '', contaId: '', competencia: today(), vencimento: today(), valor: 0, categoria: st.categorias.saida[0], prioridade: 'obrigatorio', pago: false, observacao: '' };
     const body = el('div');
     const acFornecedor = UI.autocomplete({
       items: st.fornecedores,
@@ -807,8 +808,16 @@ const Views = (() => {
         });
       }
     });
+    // Lista de contas ativas (caixa, banco, conta corrente) para o dropdown de Conta Corrente
+    const contasAtivas = (st.contas || []).filter(c => c.ativa !== false);
     const inp = {
-      documento: el('input', { class: 'input', value: data.documento }),
+      documento: el('input', { class: 'input', value: data.documento, placeholder: 'Numero da NF' }),
+      numeroPedido: el('input', { class: 'input', value: data.numeroPedido || '', placeholder: 'Numero do pedido' }),
+      centroCusto: el('input', { class: 'input', value: data.centroCusto || '', placeholder: 'Ex.: Engenharia, Comercial, Adm.' }),
+      contaId: el('select', { class: 'select' }, [
+        el('option', { value: '' }, '— selecionar conta —'),
+        ...contasAtivas.map(c => el('option', { value: c.id }, c.nome + (c.tipo ? ` (${c.tipo})` : '')))
+      ]),
       competencia: el('input', { type: 'date', class: 'input', value: data.competencia }),
       vencimento: el('input', { type: 'date', class: 'input', value: data.vencimento }),
       valor: el('input', { type: 'text', inputmode: 'decimal', class: 'input', value: fmtVal(data.valor) }),
@@ -821,12 +830,14 @@ const Views = (() => {
     };
     inp.categoria.value = data.categoria;
     inp.prioridade.value = data.prioridade;
+    inp.contaId.value = data.contaId || '';
     inp.observacao = el('textarea', { class: 'input', rows: 2 }, data.observacao || '');
     body.appendChild(el('div', { class: 'grid grid-cols-2 gap-3' }, [
-      field('Fornecedor', acFornecedor.element), field('Documento', inp.documento),
+      field('Fornecedor', acFornecedor.element), field('Conta corrente', inp.contaId),
+      field('Numero da NF', inp.documento), field('Numero do pedido', inp.numeroPedido),
+      field('Centro de custo', inp.centroCusto), field('Categoria', inp.categoria),
       field('Competência', inp.competencia), field('Vencimento', inp.vencimento),
-      field('Valor (R$)', inp.valor), field('Categoria', inp.categoria),
-      field('Prioridade', inp.prioridade)
+      field('Valor (R$)', inp.valor), field('Prioridade', inp.prioridade)
     ]));
     body.appendChild(field('Observação', inp.observacao));
     modal(t ? 'Editar título a pagar' : 'Novo título a pagar', body, () => {
@@ -835,7 +846,22 @@ const Views = (() => {
       if (!vValor.ok) { UI.toast(vValor.erro, 'r'); inp.valor.classList.add('input-erro'); return false; }
       const vPer = Validators.periodoCoerente(inp.competencia.value, inp.vencimento.value);
       if (!vPer.ok) { UI.toast(vPer.erro, 'r'); return false; }
-      const payload = { id: t?.id || DB.id(), fornecedorId: acFornecedor.value, documento: inp.documento.value, competencia: vPer.emissao || inp.competencia.value, vencimento: vPer.vencimento, valor: vValor.value, categoria: inp.categoria.value, prioridade: inp.prioridade.value, pago: t?.pago || false, dataPagamento: t?.dataPagamento, observacao: inp.observacao.value };
+      const payload = {
+        id: t?.id || DB.id(),
+        fornecedorId: acFornecedor.value,
+        documento: inp.documento.value,
+        numeroPedido: inp.numeroPedido.value,
+        centroCusto: inp.centroCusto.value,
+        contaId: inp.contaId.value,
+        competencia: vPer.emissao || inp.competencia.value,
+        vencimento: vPer.vencimento,
+        valor: vValor.value,
+        categoria: inp.categoria.value,
+        prioridade: inp.prioridade.value,
+        pago: t?.pago || false,
+        dataPagamento: t?.dataPagamento,
+        observacao: inp.observacao.value
+      };
       DB.set(s => { if (t) s.titulosPagar = s.titulosPagar.map(x => x.id === t.id ? payload : x); else s.titulosPagar.push(payload); });
       UI.toast(t ? 'Título atualizado.' : 'Título cadastrado.', 'v');
     });
