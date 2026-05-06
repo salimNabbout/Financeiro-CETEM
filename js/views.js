@@ -728,7 +728,6 @@ const Views = (() => {
           }) }, '↶ Reverter') : null,
           el('button', { class: 'btn btn-s', onclick: () => openPixQR(st, saldo, t.documento, cm[t.clienteId]?.nome) }, 'PIX'),
           el('button', { class: 'btn btn-s', onclick: () => openAnexos(st, t.id, 'receber') }, '📎' + (((st.anexos || {})[t.id] || []).length || '')),
-          el('button', { class: 'btn btn-s', title: 'Ver auditoria deste título', onclick: () => openAuditoriaItem(st, 'receber', t.id, (cm[t.clienteId]?.nome || 'título a receber') + ' · ' + (t.documento || '—')) }, '📋'),
           can('editar') ? el('button', { class: 'btn btn-s', onclick: () => openTituloReceber(st, t) }, 'Editar') : null,
           can('cancelar') && t.status !== 'cancelado' && t.status !== 'pago' ? el('button', { class: 'btn btn-d', onclick: () => UI.pedirMotivo({ titulo: 'Cancelar título a receber' }, (motivo) => {
             const r = DB.cancelarTituloReceber(t.id, motivo);
@@ -1083,7 +1082,6 @@ const Views = (() => {
             if (!r.ok) UI.toast(r.erro, 'r'); else UI.toast('Pagamento revertido. Título voltou a Pendente.', 'v');
           }) }, '↶ Reverter') : null,
           el('button', { class: 'btn btn-s', onclick: () => openAnexos(st, t.id, 'pagar') }, '📎' + (((st.anexos || {})[t.id] || []).length || '')),
-          el('button', { class: 'btn btn-s', title: 'Ver auditoria deste título', onclick: () => openAuditoriaItem(st, 'pagar', t.id, (fm[t.fornecedorId]?.nome || 'título a pagar') + ' · ' + (t.documento || '—')) }, '📋'),
           t.cancelado ? null : el('button', { class: 'btn btn-s', onclick: () => openTituloPagar(st, t) }, 'Editar'),
           can('cancelar') && !t.pago && !t.cancelado ? el('button', { class: 'btn btn-d', onclick: () => UI.pedirMotivo({ titulo: 'Cancelar título a pagar' }, (motivo) => {
             const r = DB.cancelarTituloPagar(t.id, motivo);
@@ -1752,20 +1750,228 @@ const Views = (() => {
   }
 
   // ================= AUDITORIA =================
+  // ============================================================
+  // AUDITORIA — registro permanente, consolidado e imutavel pelo app.
+  // Reune eventos com justificativa de:
+  //   - Cancelamento de titulo a pagar
+  //   - Cancelamento de titulo a receber
+  //   - Cancelamento de movimento
+  //   - Reversao de pagamento (titulo volta a pendente)
+  //   - Reversao de recebimento (titulo volta a aberto)
+  //   - Encerramento de recorrencia
+  //   - Reset/zeragem da empresa
+  //   - Outras acoes registradas via DB.log
+  // Apresenta em planilha com data, hora e motivo.
+  // NAO ha botao de limpar/zerar nesta tela.
+  // ============================================================
   function auditoria(st) {
     const v = document.getElementById('view'); v.innerHTML = '';
-    const log = st.auditoria || [];
+    const cm = clientesMap(st);
+    const fm = fornecedoresMap(st);
+
+    // Coleta eventos de fontes embutidas (titulos cancelados, reversoes,
+    // recorrencias encerradas, movimentos cancelados) e do log global
+    // st.auditoria. Deduplica e ordena.
+    function coletarTodos() {
+      const eventos = [];
+      const extrairMotivo = (det) => {
+        const m = String(det || '').match(/motivo\s*=\s*(.+)$/);
+        return m ? m[1].trim() : (det || '—');
+      };
+
+      // 1) Titulos a pagar
+      (st.titulosPagar || []).forEach(t => {
+        const fornecedor = fm[t.fornecedorId]?.nome || '—';
+        const ref = `${fornecedor} · NF ${t.documento || '—'} · ${BRL(t.valor)}`;
+        if (t.cancelado && t.cancelamento) {
+          eventos.push({
+            ts: t.cancelamento.ts, perfil: t.cancelamento.perfil,
+            tipo: 'Cancelamento de título a pagar', item: ref,
+            motivo: t.cancelamento.motivo, sev: 'r'
+          });
+        }
+        (t.reversoes || []).forEach(r => eventos.push({
+          ts: r.ts, perfil: r.perfil,
+          tipo: 'Reversão de pagamento', item: ref,
+          motivo: r.motivo, sev: 'a'
+        }));
+      });
+
+      // 2) Titulos a receber
+      (st.titulosReceber || []).forEach(t => {
+        const cliente = cm[t.clienteId]?.nome || '—';
+        const ref = `${cliente} · NF ${t.documento || '—'} · ${BRL(t.valor)}`;
+        if (t.cancelado && t.cancelamento) {
+          eventos.push({
+            ts: t.cancelamento.ts, perfil: t.cancelamento.perfil,
+            tipo: 'Cancelamento de título a receber', item: ref,
+            motivo: t.cancelamento.motivo, sev: 'r'
+          });
+        }
+        (t.reversoes || []).forEach(r => eventos.push({
+          ts: r.ts, perfil: r.perfil,
+          tipo: 'Reversão de recebimento', item: ref,
+          motivo: r.motivo, sev: 'a'
+        }));
+      });
+
+      // 3) Movimentos cancelados
+      (st.movimentos || []).forEach(m => {
+        if (m.cancelado && m.cancelamento) {
+          const ref = `${m.descricao || '—'} · ${BRL(m.valor)} · ${m.data || ''}`;
+          eventos.push({
+            ts: m.cancelamento.ts, perfil: m.cancelamento.perfil,
+            tipo: 'Cancelamento de movimento', item: ref,
+            motivo: m.cancelamento.motivo, sev: 'r'
+          });
+        }
+      });
+
+      // 4) Recorrencias encerradas
+      (st.recorrencias || []).forEach(r => {
+        if (r.encerradoEm) {
+          const contraparte = r.tipo === 'pagar' ? (fm[r.contraparteId]?.nome || '—')
+                            : r.tipo === 'receber' ? (cm[r.contraparteId]?.nome || '—')
+                            : (r.descricao || '—');
+          const ref = `Recorrência (${r.tipo}) · ${contraparte} · ${BRL(r.valor)}`;
+          eventos.push({
+            ts: r.encerradoEm, perfil: r.encerradoPor || '—',
+            tipo: 'Encerramento de recorrência', item: ref,
+            motivo: r.motivoEncerramento || '—', sev: 'g'
+          });
+        }
+      });
+
+      // 5) Trilha global (st.auditoria) — pega o que sobrou (ex.: import, reset, log)
+      // Filtra para nao duplicar com itens ja capturados acima.
+      (st.auditoria || []).forEach(a => {
+        // Pula quando ja temos a mesma acao+ts coberta por uma fonte embutida
+        const acao = String(a.acao || '').toLowerCase();
+        if (acao === 'cancelar-pagar' || acao === 'cancelar-receber' || acao === 'cancelar-movimento' || acao === 'reverter-pagamento' || acao === 'reverter-recebimento') return;
+        const tipoLabel = ({
+          'reset': 'Reset / Zeragem da empresa',
+          'reset-empresa': 'Reset / Zeragem da empresa',
+          'import': 'Importação de dados',
+          'import-csv': 'Importação CSV',
+          'import-nfse': 'Importação NFS-e',
+          'snapshot-manual': 'Snapshot manual',
+          'snapshot': 'Snapshot automático',
+          'recorrencias': 'Geração de recorrências',
+          'baixa-receber': 'Baixa de recebimento',
+          'pagamento': 'Registro de pagamento'
+        })[acao] || (a.acao || '—');
+        eventos.push({
+          ts: a.ts, perfil: a.perfil || '—',
+          tipo: tipoLabel, item: '—',
+          motivo: extrairMotivo(a.detalhe), sev: 'g'
+        });
+      });
+
+      // Dedup por (ts + tipo + item)
+      const seen = new Set();
+      const dedup = eventos.filter(e => {
+        const k = (e.ts || '') + '|' + (e.tipo || '') + '|' + (e.item || '');
+        if (seen.has(k)) return false;
+        seen.add(k); return true;
+      });
+      dedup.sort((a, b) => (b.ts || '').localeCompare(a.ts || ''));
+      return dedup;
+    }
+
+    const todosEventos = coletarTodos();
+
+    // ---------- Filtros ----------
+    if (typeof window._auditFiltro === 'undefined') window._auditFiltro = { tipo: '', perfil: '', texto: '' };
+    const fil = window._auditFiltro;
+    const tiposUnicos = Array.from(new Set(todosEventos.map(e => e.tipo))).sort();
+    const perfisUnicos = Array.from(new Set(todosEventos.map(e => e.perfil).filter(Boolean))).sort();
+
+    const selTipo = el('select', { class: 'select' }, [
+      el('option', { value: '' }, 'Todos os tipos'),
+      ...tiposUnicos.map(t => el('option', { value: t }, t))
+    ]);
+    selTipo.value = fil.tipo || '';
+    const selPerfil = el('select', { class: 'select' }, [
+      el('option', { value: '' }, 'Todos os perfis'),
+      ...perfisUnicos.map(p => el('option', { value: p }, p))
+    ]);
+    selPerfil.value = fil.perfil || '';
+    const inpBusca = el('input', { class: 'input', placeholder: 'Buscar em motivo / item...', value: fil.texto || '' });
+    const aplicar = () => {
+      window._auditFiltro = { tipo: selTipo.value, perfil: selPerfil.value, texto: inpBusca.value };
+      auditoria(DB.get());
+    };
+    selTipo.onchange = aplicar; selPerfil.onchange = aplicar; inpBusca.onchange = aplicar;
+
+    // Aplica filtros
+    let eventos = todosEventos.slice();
+    if (fil.tipo) eventos = eventos.filter(e => e.tipo === fil.tipo);
+    if (fil.perfil) eventos = eventos.filter(e => e.perfil === fil.perfil);
+    if (fil.texto) {
+      const q = fil.texto.toLowerCase();
+      eventos = eventos.filter(e => (e.motivo || '').toLowerCase().includes(q) || (e.item || '').toLowerCase().includes(q));
+    }
+
+    // ---------- Header ----------
+    v.appendChild(el('div', { class: 'flex justify-between items-center flex-wrap gap-2' }, [
+      el('div', {}, [
+        el('h2', { class: 'text-lg font-semibold' }, '📋 Auditoria'),
+        el('div', { class: 'text-xs text-slate-500 mt-1' }, 'Registro permanente. Não pode ser apagado nem zerado pela aplicação. ' + eventos.length + ' evento(s) listado(s) de ' + todosEventos.length + ' total.')
+      ]),
+      el('button', { class: 'btn btn-s', onclick: () => exportarAuditoriaCSV(eventos) }, '⬇ Exportar CSV')
+    ]));
+
+    v.appendChild(el('div', { class: 'card grid grid-cols-1 md:grid-cols-3 gap-3 mt-2' }, [
+      field('Tipo de evento', selTipo),
+      field('Perfil', selPerfil),
+      field('Buscar', inpBusca)
+    ]));
+
+    if (!eventos.length) {
+      v.appendChild(el('div', { class: 'card p-6 text-center text-slate-500 mt-2' },
+        todosEventos.length ? 'Nenhum evento encontrado para os filtros aplicados.' : 'Sem eventos auditados ainda.'));
+      return;
+    }
+
+    // ---------- Planilha ----------
     const tbl = el('table', {});
-    tbl.appendChild(el('thead', {}, el('tr', {}, ['Data/Hora', 'Ação', 'Detalhe'].map(h => el('th', {}, h)))));
+    tbl.appendChild(el('thead', {}, el('tr', {}, ['Data', 'Hora', 'Perfil', 'Tipo de ação', 'Item', 'Justificativa'].map(h => el('th', {}, h)))));
     const tbody = el('tbody');
-    if (!log.length) tbody.appendChild(el('tr', {}, el('td', { colspan: 3, class: 'text-center py-6 text-slate-500' }, 'Sem registros.')));
-    log.forEach(l => tbody.appendChild(el('tr', {}, [
-      el('td', {}, new Date(l.ts).toLocaleString('pt-BR')),
-      el('td', {}, badge(l.acao, 'g')),
-      el('td', {}, l.detalhe || '')
-    ])));
+    eventos.forEach(e => {
+      const dt = e.ts ? new Date(e.ts) : null;
+      const data = dt && !isNaN(dt) ? dt.toLocaleDateString('pt-BR') : '—';
+      const hora = dt && !isNaN(dt) ? dt.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '—';
+      const corLinha = e.sev === 'r' ? 'text-red-700' : e.sev === 'a' ? 'text-amber-700' : 'text-slate-700';
+      tbody.appendChild(el('tr', {}, [
+        el('td', { class: 'whitespace-nowrap' }, data),
+        el('td', { class: 'whitespace-nowrap font-mono text-xs' }, hora),
+        el('td', {}, e.perfil || '—'),
+        el('td', { class: corLinha + ' font-semibold' }, e.tipo || '—'),
+        el('td', {}, e.item || '—'),
+        el('td', {}, e.motivo || '—')
+      ]));
+    });
     tbl.appendChild(tbody);
-    v.appendChild(el('div', { class: 'card p-0 overflow-hidden' }, tbl));
+    v.appendChild(el('div', { class: 'card p-0 overflow-hidden mt-2' }, tbl));
+  }
+
+  // Exporta auditoria como CSV
+  function exportarAuditoriaCSV(eventos) {
+    const linhas = [['Data', 'Hora', 'Perfil', 'Tipo de acao', 'Item', 'Justificativa']];
+    eventos.forEach(e => {
+      const dt = e.ts ? new Date(e.ts) : null;
+      const data = dt && !isNaN(dt) ? dt.toLocaleDateString('pt-BR') : '';
+      const hora = dt && !isNaN(dt) ? dt.toLocaleTimeString('pt-BR') : '';
+      linhas.push([data, hora, e.perfil || '', e.tipo || '', e.item || '', e.motivo || '']);
+    });
+    const csv = linhas.map(l => l.map(c => `"${String(c).replace(/"/g, '""')}"`).join(';')).join('\n');
+    const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = 'auditoria_' + new Date().toISOString().slice(0, 10) + '.csv';
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    UI.toast('Auditoria exportada.', 'v');
   }
 
   // ================= IMPORTAÇÃO CSV de movimentos =================
@@ -2713,7 +2919,6 @@ const Views = (() => {
         el('td', {}, r.proxima ? fmtDate(r.proxima) : '—'),
         el('td', {}, r.ativa ? badge('ativa', 'v') : badge('encerrada', 'g')),
         el('td', {}, el('div', { class: 'flex gap-1' }, [
-          el('button', { class: 'btn btn-s', title: 'Ver auditoria desta recorrência', onclick: () => openAuditoriaItem(st, 'recorrencia', r.id, contraparte + ' · recorrência') }, '📋'),
           can('editar') && r.ativa ? el('button', { class: 'btn btn-s', onclick: () => openRecorrencia(st, r) }, 'Editar') : null,
           can('editar') && r.ativa ? el('button', { class: 'btn btn-d', onclick: () => UI.pedirMotivo({ titulo: 'Encerrar recorrência' }, (motivo) => {
             DB.set(s => {

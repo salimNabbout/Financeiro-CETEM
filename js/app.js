@@ -20,6 +20,7 @@
     { id: 'snapshots', label: 'Backups', icon: '💾', sub: 'Backups locais com restauração.', render: Views.snapshots },
     { id: 'importBase', label: 'Importar base', icon: '📥', sub: 'Mesclar arquivo JSON de clientes e fornecedores.', render: Views.importBase },
     { id: 'importNFSe', label: 'Importar NFS-e', icon: '🧾', sub: 'Importar XMLs de NFS-e da Nota Carioca (Prefeitura do Rio).', render: Views.importNFSe },
+    { id: 'auditoria', label: 'Auditoria', icon: '📋', sub: 'Registro permanente de cancelamentos, reversões e encerramentos.', render: Views.auditoria },
     { id: 'config',    label: 'Configurações', icon: '⚙️', sub: 'Parâmetros financeiros e empresa.', render: Views.config }
   ];
 

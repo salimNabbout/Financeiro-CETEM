@@ -326,8 +326,14 @@ const DB = (() => {
     meta: () => meta,
     set: (updater) => { updater(state); save(); },
     reset: () => {
-      // reset eh acao intencional do usuario - bypassa o guard de state vazio
+      // reset eh acao intencional do usuario - bypassa o guard de state vazio.
+      // IMPORTANTE: a auditoria NAO eh apagada — preservamos o historico completo
+      // de cancelamentos, reversoes e encerramentos (decisao operacional 2026-05-06).
+      const auditoriaPreservada = (state && Array.isArray(state.auditoria)) ? state.auditoria.slice() : [];
       state = empty();
+      state.auditoria = auditoriaPreservada;
+      // Registra o proprio reset na auditoria preservada
+      auditAppend({ ts: new Date().toISOString(), perfil: meta.perfilAtivo, acao: 'reset-empresa', detalhe: `motivo=Reset de dados via UI; auditoria preservada com ${auditoriaPreservada.length} eventos` });
       _allowEmptySave = true;
       try { save(); } finally { setTimeout(() => { _allowEmptySave = false; }, 5000); }
     },
