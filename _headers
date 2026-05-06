@@ -1,0 +1,36 @@
+# Netlify headers — controla cache do navegador.
+#
+# Estrategia:
+# - HTML, sw.js e version.json sempre revalidam (no-cache).
+# - JS e CSS podem cachear por 60s (curto o suficiente para nao atrapalhar deploys).
+# - Imagens e fontes cacheiam mais (300s).
+#
+# Combinado com o polling de versao no app.js, garante que apos um deploy
+# o usuario recebe a versao nova em ate ~2min sem precisar de Ctrl+Shift+R.
+
+/index.html
+  Cache-Control: public, max-age=0, must-revalidate
+
+/
+  Cache-Control: public, max-age=0, must-revalidate
+
+/sw.js
+  Cache-Control: public, max-age=0, must-revalidate
+
+/manifest.webmanifest
+  Cache-Control: public, max-age=0, must-revalidate
+
+/version.json
+  Cache-Control: public, max-age=0, must-revalidate
+
+/js/*
+  Cache-Control: public, max-age=60, must-revalidate
+
+/css/*
+  Cache-Control: public, max-age=60, must-revalidate
+
+/icons/*
+  Cache-Control: public, max-age=300
+
+/template_*.csv
+  Cache-Control: public, max-age=300

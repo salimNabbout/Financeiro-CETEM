@@ -401,5 +401,69 @@
   // ambientes multi-usuario com Supabase. Quando uma empresa nova
   // for criada, o usuario popula manualmente (ou importa CSV).
 
+  // ============================================================
+  // Auto-update: detecta novo deploy e mostra banner para recarregar
+  // sem precisar de Ctrl+Shift+R.
+  //
+  // Estrategia:
+  // 1. No boot, captura o ETag/Last-Modified de '/' como baseline.
+  // 2. A cada 2 minutos (e ao voltar o foco), faz HEAD em '/' e compara.
+  // 3. Se mudou, exibe banner sticky 'Nova versao disponivel'.
+  //
+  // Combinado com headers Netlify (no-cache em index.html), garante
+  // que o usuario veja a versao nova em ate ~2min depois do deploy.
+  // ============================================================
+  (function autoUpdate() {
+    const POLL_MS = 2 * 60 * 1000; // 2 minutos
+    let baseline = null; // string com ETag ou Last-Modified
+    let banner = null;
+    let polling = false;
+
+    async function snapshotVersion() {
+      try {
+        const r = await fetch('/index.html?nc=' + Date.now(), { method: 'HEAD', cache: 'no-store', credentials: 'omit' });
+        if (!r.ok) return null;
+        return (r.headers.get('etag') || r.headers.get('last-modified') || '').trim();
+      } catch (e) {
+        return null;
+      }
+    }
+
+    async function check() {
+      if (polling) return;
+      polling = true;
+      try {
+        const v = await snapshotVersion();
+        if (!v) return;
+        if (baseline === null) { baseline = v; return; }
+        if (v !== baseline && !banner) {
+          // Nova versao detectada. Mostra banner.
+          if (window.UI && UI.updateBanner) {
+            banner = UI.updateBanner('Nova versão disponível.', {
+              labelBtn: 'Atualizar agora',
+              onConfirm: () => { try { location.reload(); } catch { location.href = location.href; } },
+              onDismiss: () => { banner = null; baseline = v; /* esquece, ate proximo deploy */ }
+            });
+          } else {
+            // Fallback simples se UI ainda nao carregou.
+            if (confirm('Nova versão do app disponível. Recarregar agora?')) location.reload();
+            else baseline = v;
+          }
+        }
+      } finally {
+        polling = false;
+      }
+    }
+
+    // Primeiro snapshot apos o boot (2s de delay para nao concorrer com o boot)
+    setTimeout(check, 2000);
+    // Polling periodico
+    setInterval(check, POLL_MS);
+    // Verifica ao voltar a aba (foco) — pega deploys feitos enquanto o usuario estava com a aba em background
+    window.addEventListener('focus', check);
+    // Tambem quando a conexao volta
+    window.addEventListener('online', check);
+  })();
+
   go();
 })();

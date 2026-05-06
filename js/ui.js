@@ -348,5 +348,35 @@ const UI = (() => {
   window.fmtDate = fmtDate;
   window.fmtDateTime = fmtDateTime;
 
-  return { el, esc, modal, confirmar, confirmarCritico, pedirMotivo, toast, field, kpi, badge, banner, autocomplete, fmtDate, fmtDateTime };
+  // Banner sticky no topo: usado para 'Nova versao disponivel'. Persistente
+  // ate o usuario clicar em 'Atualizar agora' ou 'X' (descartar).
+  let _updateBannerEl = null;
+  function updateBanner(msg, opts = {}) {
+    // Se ja existe um banner, atualiza apenas a mensagem.
+    if (_updateBannerEl) { try { _updateBannerEl.remove(); } catch {} _updateBannerEl = null; }
+    const onConfirm = opts.onConfirm || (() => location.reload());
+    const onDismiss = opts.onDismiss || (() => {});
+    const labelBtn = opts.labelBtn || 'Atualizar agora';
+    const bar = el('div', {
+      role: 'alert',
+      style: 'position:fixed; top:0; left:0; right:0; z-index:9999; background:#1d4ed8; color:#fff; padding:10px 16px; display:flex; align-items:center; justify-content:center; gap:12px; font-size:14px; box-shadow:0 2px 8px rgba(0,0,0,0.15);'
+    }, [
+      el('span', { style: 'flex:0 1 auto;' }, '🔄  ' + msg),
+      el('button', {
+        style: 'background:#fff; color:#1d4ed8; padding:4px 12px; border-radius:6px; font-weight:600; border:none; cursor:pointer;',
+        onclick: () => { onConfirm(); }
+      }, labelBtn),
+      el('button', {
+        style: 'background:transparent; color:#fff; border:none; cursor:pointer; font-size:18px; padding:0 4px;',
+        title: 'Descartar',
+        onclick: () => { try { bar.remove(); } catch {} _updateBannerEl = null; onDismiss(); }
+      }, '×')
+    ]);
+    document.body.appendChild(bar);
+    _updateBannerEl = bar;
+    return bar;
+  }
+  window.updateBanner = updateBanner;
+
+  return { el, esc, modal, confirmar, confirmarCritico, pedirMotivo, toast, field, kpi, badge, banner, autocomplete, updateBanner, fmtDate, fmtDateTime };
 })();
