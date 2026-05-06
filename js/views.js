@@ -2220,7 +2220,22 @@ const Views = (() => {
               if (x) { x.ativa = false; x.encerradoEm = new Date().toISOString(); x.motivoEncerramento = motivo; }
             });
             UI.toast('Recorrência encerrada. Títulos já gerados foram preservados.', 'v');
-          }) }, 'Encerrar') : null
+          }) }, 'Encerrar') : null,
+          // Exclusao fisica da regra. Titulos ja gerados em Contas a Pagar/Receber sao preservados.
+          can('editar') ? el('button', {
+            class: 'btn btn-d',
+            title: 'Excluir recorrência',
+            onclick: () => {
+              const titulosVinculados = ((st.titulosPagar || []).concat(st.titulosReceber || [])).filter(t => t.recorrenciaId === r.id).length;
+              const aviso = titulosVinculados > 0
+                ? `Excluir esta recorrência?\n\n${titulosVinculados} título(s) já gerado(s) ficarão preservados em Contas a pagar/receber. Apenas a regra será removida — não geraremos mais títulos automaticamente.`
+                : 'Excluir esta recorrência?\n\nNenhum título foi gerado ainda por esta regra. Esta ação remove a regra permanentemente.';
+              UI.confirmar(aviso, () => {
+                DB.set(s => { s.recorrencias = (s.recorrencias || []).filter(i => i.id !== r.id); });
+                UI.toast('Recorrência excluída.', 'v');
+              });
+            }
+          }, '×') : null
         ].filter(Boolean)))
       ]));
     });
