@@ -197,19 +197,20 @@ const Views = (() => {
   let fxFiltro = { conta: '', tag: '', texto: '' };
   // Modal de drilldown: lista todos os lancamentos com data == iso (movimentos
   // realizados/previstos + titulos a receber abertos + titulos a pagar pendentes)
-  function abrirDrillFluxoDia(st, iso) {
+  function abrirDrillFluxoDia(st, iso, contaId = null) {
     const cm = clientesMap(st);
     const fm = fornecedoresMap(st);
+    const matchConta = (id) => !contaId || (id || 'principal') === contaId;
     const linhas = [];
-    (st.movimentos || []).filter(m => m.data === iso && !m.cancelado).forEach(m => {
+    (st.movimentos || []).filter(m => m.data === iso && !m.cancelado && matchConta(m.contaId)).forEach(m => {
       linhas.push({ tipo: m.tipo, origem: 'movimento', desc: m.descricao || '—', categoria: m.categoria || '—', valor: +m.valor, status: m.status || 'previsto' });
     });
-    (st.titulosReceber || []).filter(t => t.vencimento === iso && t.status !== 'pago' && t.status !== 'cancelado').forEach(t => {
+    (st.titulosReceber || []).filter(t => t.vencimento === iso && t.status !== 'pago' && t.status !== 'cancelado' && matchConta(t.contaId)).forEach(t => {
       const valor = (+t.valor) - (+t.valorRecebido || 0);
       if (valor <= 0) return;
       linhas.push({ tipo: 'entrada', origem: 'titulo-receber', desc: cm[t.clienteId]?.nome || '—', categoria: t.categoria || '—', valor, status: t.status, doc: t.documento });
     });
-    (st.titulosPagar || []).filter(t => t.vencimento === iso && !t.pago && !t.cancelado).forEach(t => {
+    (st.titulosPagar || []).filter(t => t.vencimento === iso && !t.pago && !t.cancelado && matchConta(t.contaId)).forEach(t => {
       linhas.push({ tipo: 'saida', origem: 'titulo-pagar', desc: fm[t.fornecedorId]?.nome || '—', categoria: t.categoria || '—', valor: +t.valor, status: t.pago ? 'pago' : 'pendente', doc: t.documento });
     });
     const totalE = linhas.filter(l => l.tipo === 'entrada').reduce((s, l) => s + l.valor, 0);
@@ -241,7 +242,8 @@ const Views = (() => {
       body.appendChild(el('div', { class: 'card p-0 overflow-hidden' }, tbl));
     }
     const dataBR = (function() { try { return new Date(iso + 'T12:00:00').toLocaleDateString('pt-BR', { weekday: 'long', day: '2-digit', month: 'long', year: 'numeric' }); } catch { return iso; } })();
-    UI.modal('Detalhamento do dia · ' + dataBR, body, () => true);
+    const escopoModal = contaId ? ' · ' + (((/** @type{any} */ (st.contas) || []).find(c => c.id === contaId) || {}).nome || contaId) : ' · todas as contas';
+    UI.modal('Detalhamento do dia · ' + dataBR + escopoModal, body, () => true);
   }
 
   // Calcula comparativo previsto vs realizado para um determinado mes (ano-mes).
@@ -271,8 +273,11 @@ const Views = (() => {
 
   function fluxoCaixa(st) {
     const v = document.getElementById('view'); v.innerHTML = '';
-    const saldoAtual = KPI.saldoRealizado(st);
-    const proj60 = KPI.projecaoDiaria(st, 60, cenarioSel || 'realista');
+    // Conta selecionada (vazio = consolidado). Sobrevive a re-renderes via fxFiltro.
+    const contaSel = fxFiltro.conta || null;
+    const contaNome = contaSel ? ((st.contas || []).find(c => c.id === contaSel) || {}).nome || contaSel : null;
+    const saldoAtual = KPI.saldoRealizado(st, contaSel);
+    const proj60 = KPI.projecaoDiaria(st, 60, cenarioSel || 'realista', contaSel);
     const caixaMin = +(st.parametros && st.parametros.caixaMinimo) || 0;
 
     // ---- KPIs de vencidos (somados no bucket de hoje) ----
@@ -289,14 +294,28 @@ const Views = (() => {
     }
 
     // ---- Header ----
+    const escopo = contaNome ? `· Conta: ${contaNome}` : '· Consolidado (todas as contas)';
     const header = el('div', { class: 'flex justify-between items-center flex-wrap gap-2' }, [
-      el('div', { class: 'text-sm text-slate-600' }, `Saldo realizado: ${BRL(saldoAtual)} · Previsto 7d: ${BRL(KPI.saldoProjetadoSemana(st))} · Caixa mínimo: ${BRL(caixaMin)}`),
+      el('div', { class: 'text-sm text-slate-600' }, `Saldo realizado: ${BRL(saldoAtual)} · Previsto 7d: ${BRL(KPI.saldoProjetadoSemana(st, contaSel))} · Caixa mínimo: ${BRL(caixaMin)} ${escopo}`),
       el('div', { class: 'flex gap-2 flex-wrap' }, [
         can('editar') ? el('button', { class: 'btn btn-s', onclick: () => openImportCSV(st) }, 'Importar CSV') : null,
         can('editar') ? el('button', { class: 'btn btn-p', onclick: () => openMovimento(st) }, '+ Novo lançamento') : null
       ].filter(Boolean))
     ]);
     v.appendChild(header);
+
+    // ---- Filtros (Conta / Tag / Busca) — afetam projecao, alertas e tabela ----
+    const todasTags = Array.from(new Set(st.movimentos.flatMap(m => m.tags || []))).sort();
+    const selConta = el('select', { class: 'select' }, [el('option', { value: '' }, 'Todas as contas'), ...(st.contas || []).map(c => el('option', { value: c.id }, c.nome))]);
+    selConta.value = fxFiltro.conta || '';
+    const selTag = el('select', { class: 'select' }, [el('option', { value: '' }, 'Todas as tags'), ...todasTags.map(t => el('option', { value: t }, t))]);
+    selTag.value = fxFiltro.tag || '';
+    const inpTexto = el('input', { class: 'input', placeholder: 'Buscar na descrição...', value: fxFiltro.texto || '' });
+    const aplicar = () => { fxFiltro = { conta: selConta.value, tag: selTag.value, texto: inpTexto.value }; fluxoCaixa(DB.get()); };
+    selConta.onchange = aplicar; selTag.onchange = aplicar; inpTexto.onchange = aplicar;
+    v.appendChild(el('div', { class: 'card grid grid-cols-1 md:grid-cols-3 gap-3 mt-2' }, [
+      field('Conta', selConta), field('Tag', selTag), field('Busca', inpTexto)
+    ]));
 
     // ---- Banner de alerta critico ----
     if (alertaSaldoNeg >= 0) {
@@ -320,7 +339,7 @@ const Views = (() => {
 
     // ---- Gráfico de projeção 60 dias ----
     const chartCard = el('div', { class: 'card mt-2' }, [
-      el('h3', { class: 'font-semibold mb-2' }, `Projeção de saldo · próximos 60 dias · cenário ${cenarioSel || 'realista'}`),
+      el('h3', { class: 'font-semibold mb-2' }, `Projeção de saldo · próximos 60 dias · cenário ${cenarioSel || 'realista'}${contaNome ? ' · ' + contaNome : ' · todas as contas'}`),
       el('canvas', { id: 'chart-fluxo-view', height: '90' })
     ]);
     v.appendChild(chartCard);
@@ -374,7 +393,7 @@ const Views = (() => {
               const idx = elements[0].index;
               const ponto = proj60[idx];
               if (!ponto) return;
-              abrirDrillFluxoDia(DB.get(), ponto.data);
+              abrirDrillFluxoDia(DB.get(), ponto.data, contaSel);
             },
             onHover: (event, elements) => {
               if (event && event.native && event.native.target) {
@@ -386,17 +405,7 @@ const Views = (() => {
       } catch (e) { console.error('chart-fluxo-view error', e); }
     }, 30);
 
-    const todasTags = Array.from(new Set(st.movimentos.flatMap(m => m.tags || []))).sort();
-    const selConta = el('select', { class: 'select' }, [el('option', { value: '' }, 'Todas as contas'), ...(st.contas || []).map(c => el('option', { value: c.id }, c.nome))]);
-    selConta.value = fxFiltro.conta;
-    const selTag = el('select', { class: 'select' }, [el('option', { value: '' }, 'Todas as tags'), ...todasTags.map(t => el('option', { value: t }, t))]);
-    selTag.value = fxFiltro.tag;
-    const inpTexto = el('input', { class: 'input', placeholder: 'Buscar na descrição...', value: fxFiltro.texto });
-    const aplicar = () => { fxFiltro = { conta: selConta.value, tag: selTag.value, texto: inpTexto.value }; fluxoCaixa(DB.get()); };
-    selConta.onchange = aplicar; selTag.onchange = aplicar; inpTexto.onchange = aplicar;
-    v.appendChild(el('div', { class: 'card grid grid-cols-1 md:grid-cols-3 gap-3' }, [
-      field('Conta', selConta), field('Tag', selTag), field('Busca', inpTexto)
-    ]));
+    // (filtros movidos para o topo, logo apos o header)
 
     // ---- Card: previsto vs realizado (mes anterior + mes atual) ----
     const hojeDt = new Date();

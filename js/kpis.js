@@ -41,17 +41,22 @@ const KPI = (() => {
     pessimista: { e: 0.8,  s: 1.1 },
     agressivo:  { e: 1.2,  s: 0.95 }
   };
-  function projecaoDiaria(st, dias = 60, cenario = 'realista') {
+  function projecaoDiaria(st, dias = 60, cenario = 'realista', contaId = null) {
     const f = CENARIOS[cenario] || CENARIOS.realista;
     const inicio = today();
-    let saldo = saldoRealizado(st);
+    // Saldo de partida: filtrado por conta se o usuario pediu.
+    let saldo = saldoRealizado(st, contaId || null);
     const mapa = {};
     // Buckets separados para vencidos: somam-se em 'hoje' mas mantemos rastro
     // pra UI mostrar tag de atraso e pro alerta de risco.
     let vencidoEntradas = 0, vencidoSaidas = 0;
 
+    // Helper: passa no filtro de conta? Item sem contaId trata como 'principal'
+    // (compat com schema antigo). Quando contaId nao e passado, aceita tudo.
+    const matchConta = (id) => !contaId || (id || 'principal') === contaId;
+
     // previstos de movimentos (futuros + atrasados)
-    st.movimentos.filter(m => m.status === 'previsto' && !m.cancelado)
+    st.movimentos.filter(m => m.status === 'previsto' && !m.cancelado && matchConta(m.contaId))
       .forEach(m => {
         if (!m.data) return;
         if (m.data >= inicio) {
@@ -66,7 +71,7 @@ const KPI = (() => {
       });
 
     // títulos a receber abertos/parciais
-    st.titulosReceber.filter(t => t.status !== 'pago' && t.status !== 'cancelado')
+    st.titulosReceber.filter(t => t.status !== 'pago' && t.status !== 'cancelado' && matchConta(t.contaId))
       .forEach(t => {
         if (!t.vencimento) return;
         const valor = (+t.valor) - (+t.valorRecebido || 0);
@@ -80,7 +85,7 @@ const KPI = (() => {
       });
 
     // títulos a pagar pendentes
-    st.titulosPagar.filter(t => !t.pago && !t.cancelado)
+    st.titulosPagar.filter(t => !t.pago && !t.cancelado && matchConta(t.contaId))
       .forEach(t => {
         if (!t.vencimento) return;
         if (t.vencimento >= inicio) {
@@ -110,9 +115,9 @@ const KPI = (() => {
     });
   }
 
-  function saldoProjetadoSemana(st) {
-    const proj = projecaoDiaria(st, 7);
-    return proj.length ? proj[proj.length - 1].saldo : saldoRealizado(st);
+  function saldoProjetadoSemana(st, contaId = null) {
+    const proj = projecaoDiaria(st, 7, 'realista', contaId);
+    return proj.length ? proj[proj.length - 1].saldo : saldoRealizado(st, contaId);
   }
 
   function custoFixoMensal(st) {
