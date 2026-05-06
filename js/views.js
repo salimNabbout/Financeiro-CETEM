@@ -2135,45 +2135,105 @@ const Views = (() => {
     const mes = calMes ? calMes.mes : (hoje.getMonth() + 1);
     calMes = { ano, mes };
 
-    const nav = el('div', { class: 'flex gap-2 items-center' }, [
-      el('button', { class: 'btn btn-s', onclick: () => { const d = new Date(ano, mes - 2, 1); calMes = { ano: d.getFullYear(), mes: d.getMonth() + 1 }; calendario(DB.get()); } }, '◀'),
-      el('div', { class: 'font-semibold' }, new Date(ano, mes - 1, 1).toLocaleString('pt-BR', { month: 'long', year: 'numeric' })),
-      el('button', { class: 'btn btn-s', onclick: () => { const d = new Date(ano, mes, 1); calMes = { ano: d.getFullYear(), mes: d.getMonth() + 1 }; calendario(DB.get()); } }, '▶'),
+    // ----- Selectors de ano/mes + navegacao + Hoje -----
+    const meses = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
+    const anoAtual = hoje.getFullYear();
+    const anosDisp = []; for (let y = anoAtual - 2; y <= anoAtual + 5; y++) anosDisp.push(y);
+    const selMes = el('select', { class: 'select', onchange: (e) => { calMes = { ano, mes: +e.target.value }; calendario(DB.get()); } },
+      meses.map((m, i) => el('option', { value: String(i + 1) }, m)));
+    selMes.value = String(mes);
+    const selAno = el('select', { class: 'select', onchange: (e) => { calMes = { ano: +e.target.value, mes }; calendario(DB.get()); } },
+      anosDisp.map(y => el('option', { value: String(y) }, String(y))));
+    selAno.value = String(ano);
+
+    const nav = el('div', { class: 'flex gap-2 items-center flex-wrap' }, [
+      el('button', { class: 'btn btn-s', title: 'Mes anterior', onclick: () => { const d = new Date(ano, mes - 2, 1); calMes = { ano: d.getFullYear(), mes: d.getMonth() + 1 }; calendario(DB.get()); } }, '◀'),
+      el('div', { class: 'flex gap-2 items-center' }, [
+        el('label', { class: 'text-sm text-slate-600' }, 'Mês'), selMes,
+        el('label', { class: 'text-sm text-slate-600 ml-2' }, 'Ano'), selAno
+      ]),
+      el('button', { class: 'btn btn-s', title: 'Proximo mes', onclick: () => { const d = new Date(ano, mes, 1); calMes = { ano: d.getFullYear(), mes: d.getMonth() + 1 }; calendario(DB.get()); } }, '▶'),
       el('button', { class: 'btn btn-s ml-auto', onclick: () => { calMes = { ano: hoje.getFullYear(), mes: hoje.getMonth() + 1 }; calendario(DB.get()); } }, 'Hoje')
     ]);
     v.appendChild(nav);
 
-    const mapa = KPI.vencimentosPorDia(st, ano, mes);
-    const totalR = Object.values(mapa).reduce((s, d) => s + d.receber, 0);
-    const totalP = Object.values(mapa).reduce((s, d) => s + d.pagar, 0);
-    v.appendChild(el('div', { class: 'text-sm text-slate-600' }, `A receber no mês: ${BRL(totalR)} · A pagar no mês: ${BRL(totalP)} · Líquido: ${BRL(totalR - totalP)}`));
+    // ----- Coleta itens por dia (com nomes de cliente/fornecedor) -----
+    const cm = clientesMap(st);
+    const fm = fornecedoresMap(st);
+    const pref = `${ano}-${String(mes).padStart(2, '0')}`;
+    const itensPorDia = {};
+    let totalR = 0, totalP = 0;
+    (st.titulosReceber || [])
+      .filter(t => t.status !== 'pago' && t.status !== 'cancelado' && t.vencimento && t.vencimento.startsWith(pref))
+      .forEach(t => {
+        const valor = (+t.valor) - (+t.valorRecebido || 0);
+        if (valor <= 0) return;
+        itensPorDia[t.vencimento] = itensPorDia[t.vencimento] || [];
+        itensPorDia[t.vencimento].push({ tipo: 'r', nome: cm[t.clienteId]?.nome || '—', valor });
+        totalR += valor;
+      });
+    (st.titulosPagar || [])
+      .filter(t => !t.pago && !t.cancelado && t.vencimento && t.vencimento.startsWith(pref))
+      .forEach(t => {
+        const valor = +t.valor;
+        if (valor <= 0) return;
+        itensPorDia[t.vencimento] = itensPorDia[t.vencimento] || [];
+        itensPorDia[t.vencimento].push({ tipo: 'p', nome: fm[t.fornecedorId]?.nome || '—', valor });
+        totalP += valor;
+      });
+
+    v.appendChild(el('div', { class: 'text-sm text-slate-600 mt-2' },
+      `A receber no mês: ${BRL(totalR)} · A pagar no mês: ${BRL(totalP)} · Líquido: ${BRL(totalR - totalP)}`));
 
     const primeiro = new Date(ano, mes - 1, 1);
     const diasMes = new Date(ano, mes, 0).getDate();
     const offset = primeiro.getDay(); // 0=dom
     const nomesDias = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
 
-    const grid = el('div', { class: 'card p-3' });
-    const header = el('div', { class: 'grid grid-cols-7 gap-2 mb-2' }, nomesDias.map(n => el('div', { class: 'text-base font-bold text-slate-700 text-center' }, n)));
+    const grid = el('div', { class: 'card p-3 mt-2' });
+    const header = el('div', { class: 'grid grid-cols-7 gap-2 mb-2' },
+      nomesDias.map(n => el('div', { class: 'text-base font-bold text-slate-700 text-center' }, n)));
     grid.appendChild(header);
     const cells = el('div', { class: 'grid grid-cols-7 gap-2' });
-    for (let i = 0; i < offset; i++) cells.appendChild(el('div', { class: 'h-28' }, ''));
+    for (let i = 0; i < offset; i++) cells.appendChild(el('div', { class: 'min-h-32' }, ''));
     for (let d = 1; d <= diasMes; d++) {
       const iso = `${ano}-${String(mes).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
-      const dia = mapa[iso];
+      const itens = itensPorDia[iso] || [];
       const isHoje = iso === KPI.today();
       const borda = isHoje ? 'border-blue-500 border-2' : 'border-slate-200';
-      const cell = el('div', { class: `h-28 border ${borda} rounded p-2 text-sm overflow-hidden` }, [
-        el('div', { class: 'font-bold text-base mb-1 ' + (isHoje ? 'text-blue-600' : 'text-slate-800') }, String(d)),
-        dia ? el('div', { class: 'space-y-0.5' }, [
-          dia.receber > 0 ? el('div', { class: 'text-green-700 font-bold truncate' }, '+ ' + BRL(dia.receber)) : null,
-          dia.pagar > 0 ? el('div', { class: 'text-red-700 font-bold truncate' }, '− ' + BRL(dia.pagar)) : null
-        ].filter(Boolean)) : null
-      ]);
+
+      // Subtotais para o cabecalho da celula
+      const subR = itens.filter(i => i.tipo === 'r').reduce((s, i) => s + i.valor, 0);
+      const subP = itens.filter(i => i.tipo === 'p').reduce((s, i) => s + i.valor, 0);
+
+      const linhasItens = itens.map(i => el('div', {
+        class: (i.tipo === 'r' ? 'text-green-700' : 'text-red-700') + ' truncate text-xs leading-snug',
+        title: (i.tipo === 'r' ? '+ ' : '− ') + i.nome + ' · ' + BRL(i.valor)
+      }, (i.tipo === 'r' ? '+ ' : '− ') + i.nome + ' · ' + BRL(i.valor)));
+
+      const cell = el('div', { class: `min-h-32 border ${borda} rounded p-2 text-sm flex flex-col` }, [
+        el('div', { class: 'flex justify-between items-center mb-1' }, [
+          el('div', { class: 'font-bold text-base ' + (isHoje ? 'text-blue-600' : 'text-slate-800') }, String(d)),
+          el('div', { class: 'flex gap-1 text-xs' }, [
+            subR > 0 ? el('span', { class: 'text-green-700 font-semibold', title: 'Total a receber no dia' }, BRL(subR)) : null,
+            subP > 0 ? el('span', { class: 'text-red-700 font-semibold', title: 'Total a pagar no dia' }, BRL(subP)) : null
+          ].filter(Boolean))
+        ]),
+        itens.length
+          ? el('div', { class: 'space-y-0.5 overflow-y-auto', style: 'max-height:7rem;' }, linhasItens)
+          : null
+      ].filter(Boolean));
       cells.appendChild(cell);
     }
     grid.appendChild(cells);
     v.appendChild(grid);
+
+    // ----- Legenda discreta -----
+    v.appendChild(el('div', { class: 'text-xs text-slate-500 mt-2 flex gap-4 flex-wrap' }, [
+      el('span', {}, [el('span', { class: 'inline-block w-3 h-3 align-middle rounded-sm mr-1', style: 'background:#16a34a' }), ' Receber (cliente · valor)']),
+      el('span', {}, [el('span', { class: 'inline-block w-3 h-3 align-middle rounded-sm mr-1', style: 'background:#dc2626' }), ' Pagar (fornecedor · valor)']),
+      el('span', {}, 'Hover sobre o nome trunca completo no tooltip.')
+    ]));
   }
 
   // ================= RECORRÊNCIAS =================
