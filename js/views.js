@@ -195,7 +195,122 @@ const Views = (() => {
 
   // ================= FLUXO DE CAIXA =================
   let fxFiltro = { conta: '', tag: '', texto: '' };
-  // Modal de drilldown: lista todos os lancamentos com data == iso (movimentos
+  // ============================================================
+  // Modal de auditoria por item — mostra historico de justificativas
+  // (cancelamentos, reversoes, encerramentos) ligados ao id especifico.
+  // Combina dados embutidos no proprio item + entradas em st.auditoria.
+  // ============================================================
+  function coletarEventosItem(st, tipo, id, item) {
+    const eventos = [];
+    // Eventos embutidos no proprio item:
+    if (item) {
+      if (item.cancelado && item.cancelamento) {
+        eventos.push({
+          ts: item.cancelamento.ts,
+          perfil: item.cancelamento.perfil,
+          acao: tipo === 'pagar' ? 'Cancelamento de título a pagar'
+              : tipo === 'receber' ? 'Cancelamento de título a receber'
+              : tipo === 'movimento' ? 'Cancelamento de movimento'
+              : 'Cancelamento',
+          motivo: item.cancelamento.motivo
+        });
+      }
+      // Reversoes (array)
+      (item.reversoes || []).forEach(r => {
+        eventos.push({
+          ts: r.ts, perfil: r.perfil,
+          acao: tipo === 'pagar' ? 'Reversão de pagamento' : 'Reversão de recebimento',
+          motivo: r.motivo
+        });
+      });
+      // Encerramento de recorrencia
+      if (item.encerradoEm) {
+        eventos.push({
+          ts: item.encerradoEm,
+          perfil: item.encerradoPor || '—',
+          acao: 'Encerramento de recorrência',
+          motivo: item.motivoEncerramento || '—'
+        });
+      }
+      // Criacao (informativo)
+      if (item.criadoEm) {
+        eventos.push({
+          ts: item.criadoEm,
+          perfil: item.criadoPor || '—',
+          acao: 'Criação',
+          motivo: '(registro original)'
+        });
+      }
+    }
+    // Eventos da auditoria global filtrados pelo id no campo 'detalhe'
+    (st.auditoria || []).forEach(a => {
+      const det = a.detalhe || '';
+      if (det.includes(id)) {
+        eventos.push({
+          ts: a.ts, perfil: a.perfil,
+          acao: a.acao,
+          motivo: extrairMotivo(det)
+        });
+      }
+    });
+    // Deduplica por (ts + acao) para nao mostrar a mesma coisa 2x quando o item
+    // ja registrou o evento embutido E a auditoria tambem.
+    const seen = new Set();
+    const dedup = eventos.filter(e => {
+      const k = (e.ts || '') + '|' + (e.acao || '');
+      if (seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    });
+    // Ordena por ts decrescente (mais recente primeiro)
+    dedup.sort((a, b) => (b.ts || '').localeCompare(a.ts || ''));
+    return dedup;
+  }
+
+  function extrairMotivo(detalhe) {
+    const m = String(detalhe || '').match(/motivo\s*=\s*(.+)$/);
+    return m ? m[1].trim() : detalhe;
+  }
+
+  function openAuditoriaItem(st, tipo, id, label) {
+    let item = null;
+    if (tipo === 'pagar') item = (st.titulosPagar || []).find(x => x.id === id);
+    else if (tipo === 'receber') item = (st.titulosReceber || []).find(x => x.id === id);
+    else if (tipo === 'recorrencia') item = (st.recorrencias || []).find(x => x.id === id);
+    else if (tipo === 'movimento') item = (st.movimentos || []).find(x => x.id === id);
+
+    const eventos = coletarEventosItem(st, tipo, id, item);
+    const body = el('div');
+    body.appendChild(el('div', { class: 'text-sm text-slate-600 mb-3' },
+      `Histórico de ações que exigiram justificativa para ${label || id}.`));
+
+    if (!eventos.length) {
+      body.appendChild(el('div', { class: 'card p-4 text-center text-slate-500 text-sm' },
+        'Nenhum evento auditado neste item ainda.'));
+    } else {
+      const tbl = el('table', {});
+      tbl.appendChild(el('thead', {}, el('tr', {}, ['Quando', 'Perfil', 'Ação', 'Justificativa'].map(h => el('th', {}, h)))));
+      const tbody = el('tbody');
+      eventos.forEach(e => {
+        const dataHora = e.ts ? (UI.fmtDateTime ? UI.fmtDateTime(e.ts) : new Date(e.ts).toLocaleString('pt-BR')) : '—';
+        const corLinha = (e.acao || '').toLowerCase().includes('cancel') ? 'text-red-700'
+                       : (e.acao || '').toLowerCase().includes('revers') ? 'text-amber-700'
+                       : (e.acao || '').toLowerCase().includes('encerr') ? 'text-slate-700'
+                       : 'text-slate-700';
+        tbody.appendChild(el('tr', {}, [
+          el('td', { class: 'whitespace-nowrap' }, dataHora),
+          el('td', {}, e.perfil || '—'),
+          el('td', { class: corLinha + ' font-semibold' }, e.acao || '—'),
+          el('td', {}, e.motivo || '—')
+        ]));
+      });
+      tbl.appendChild(tbody);
+      body.appendChild(el('div', { class: 'card p-0 overflow-hidden' }, tbl));
+    }
+    UI.modal('📋 Auditoria do item', body, () => true);
+  }
+
+    // Modal de drilldown: lista todos os lancamentos com data == iso (movimentos
   // realizados/previstos + titulos a receber abertos + titulos a pagar pendentes)
   function abrirDrillFluxoDia(st, iso, contaId = null) {
     const cm = clientesMap(st);
@@ -613,6 +728,7 @@ const Views = (() => {
           }) }, '↶ Reverter') : null,
           el('button', { class: 'btn btn-s', onclick: () => openPixQR(st, saldo, t.documento, cm[t.clienteId]?.nome) }, 'PIX'),
           el('button', { class: 'btn btn-s', onclick: () => openAnexos(st, t.id, 'receber') }, '📎' + (((st.anexos || {})[t.id] || []).length || '')),
+          el('button', { class: 'btn btn-s', title: 'Ver auditoria deste título', onclick: () => openAuditoriaItem(st, 'receber', t.id, (cm[t.clienteId]?.nome || 'título a receber') + ' · ' + (t.documento || '—')) }, '📋'),
           can('editar') ? el('button', { class: 'btn btn-s', onclick: () => openTituloReceber(st, t) }, 'Editar') : null,
           can('cancelar') && t.status !== 'cancelado' && t.status !== 'pago' ? el('button', { class: 'btn btn-d', onclick: () => UI.pedirMotivo({ titulo: 'Cancelar título a receber' }, (motivo) => {
             const r = DB.cancelarTituloReceber(t.id, motivo);
@@ -967,6 +1083,7 @@ const Views = (() => {
             if (!r.ok) UI.toast(r.erro, 'r'); else UI.toast('Pagamento revertido. Título voltou a Pendente.', 'v');
           }) }, '↶ Reverter') : null,
           el('button', { class: 'btn btn-s', onclick: () => openAnexos(st, t.id, 'pagar') }, '📎' + (((st.anexos || {})[t.id] || []).length || '')),
+          el('button', { class: 'btn btn-s', title: 'Ver auditoria deste título', onclick: () => openAuditoriaItem(st, 'pagar', t.id, (fm[t.fornecedorId]?.nome || 'título a pagar') + ' · ' + (t.documento || '—')) }, '📋'),
           t.cancelado ? null : el('button', { class: 'btn btn-s', onclick: () => openTituloPagar(st, t) }, 'Editar'),
           can('cancelar') && !t.pago && !t.cancelado ? el('button', { class: 'btn btn-d', onclick: () => UI.pedirMotivo({ titulo: 'Cancelar título a pagar' }, (motivo) => {
             const r = DB.cancelarTituloPagar(t.id, motivo);
@@ -2596,6 +2713,7 @@ const Views = (() => {
         el('td', {}, r.proxima ? fmtDate(r.proxima) : '—'),
         el('td', {}, r.ativa ? badge('ativa', 'v') : badge('encerrada', 'g')),
         el('td', {}, el('div', { class: 'flex gap-1' }, [
+          el('button', { class: 'btn btn-s', title: 'Ver auditoria desta recorrência', onclick: () => openAuditoriaItem(st, 'recorrencia', r.id, contraparte + ' · recorrência') }, '📋'),
           can('editar') && r.ativa ? el('button', { class: 'btn btn-s', onclick: () => openRecorrencia(st, r) }, 'Editar') : null,
           can('editar') && r.ativa ? el('button', { class: 'btn btn-d', onclick: () => UI.pedirMotivo({ titulo: 'Encerrar recorrência' }, (motivo) => {
             DB.set(s => {
