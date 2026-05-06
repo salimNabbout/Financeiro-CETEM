@@ -197,14 +197,108 @@ const Views = (() => {
   let fxFiltro = { conta: '', tag: '', texto: '' };
   function fluxoCaixa(st) {
     const v = document.getElementById('view'); v.innerHTML = '';
+    const saldoAtual = KPI.saldoRealizado(st);
+    const proj60 = KPI.projecaoDiaria(st, 60, cenarioSel || 'realista');
+    const caixaMin = +(st.parametros && st.parametros.caixaMinimo) || 0;
+
+    // ---- KPIs de vencidos (somados no bucket de hoje) ----
+    const hoje0 = proj60[0];
+    const vencE = hoje0 ? (hoje0.vencidoEntradas || 0) : 0;
+    const vencS = hoje0 ? (hoje0.vencidoSaidas || 0) : 0;
+
+    // ---- Detecta cruzamento do caixa minimo ----
+    let alertaCruzaIdx = -1;
+    let alertaSaldoNeg = -1;
+    for (let i = 0; i < proj60.length; i++) {
+      if (alertaSaldoNeg < 0 && proj60[i].saldo < 0) alertaSaldoNeg = i;
+      if (alertaCruzaIdx < 0 && proj60[i].saldo < caixaMin) alertaCruzaIdx = i;
+    }
+
+    // ---- Header ----
     const header = el('div', { class: 'flex justify-between items-center flex-wrap gap-2' }, [
-      el('div', { class: 'text-sm text-slate-600' }, `Saldo realizado: ${BRL(KPI.saldoRealizado(st))} · Previsto 7d: ${BRL(KPI.saldoProjetadoSemana(st))}`),
+      el('div', { class: 'text-sm text-slate-600' }, `Saldo realizado: ${BRL(saldoAtual)} · Previsto 7d: ${BRL(KPI.saldoProjetadoSemana(st))} · Caixa mínimo: ${BRL(caixaMin)}`),
       el('div', { class: 'flex gap-2 flex-wrap' }, [
         can('editar') ? el('button', { class: 'btn btn-s', onclick: () => openImportCSV(st) }, 'Importar CSV') : null,
         can('editar') ? el('button', { class: 'btn btn-p', onclick: () => openMovimento(st) }, '+ Novo lançamento') : null
       ].filter(Boolean))
     ]);
     v.appendChild(header);
+
+    // ---- Banner de alerta critico ----
+    if (alertaSaldoNeg >= 0) {
+      const data = fmtDate(proj60[alertaSaldoNeg].data);
+      v.appendChild(el('div', { class: 'mt-2 p-3 rounded border border-red-300 bg-red-50 text-red-900 text-sm font-medium' },
+        `⚠ Saldo projetado fica NEGATIVO em ${alertaSaldoNeg + 1} dia(s) (${data}). Revise contas a pagar e antecipe recebimentos.`));
+    } else if (alertaCruzaIdx >= 0 && caixaMin > 0) {
+      const data = fmtDate(proj60[alertaCruzaIdx].data);
+      v.appendChild(el('div', { class: 'mt-2 p-3 rounded border border-amber-300 bg-amber-50 text-amber-900 text-sm font-medium' },
+        `⚠ Saldo cruza o caixa mínimo (${BRL(caixaMin)}) em ${alertaCruzaIdx + 1} dia(s) (${data}).`));
+    }
+
+    // ---- Banner de vencidos ----
+    if (vencE > 0 || vencS > 0) {
+      const partes = [];
+      if (vencE > 0) partes.push(`${BRL(vencE)} a receber em atraso`);
+      if (vencS > 0) partes.push(`${BRL(vencS)} a pagar em atraso`);
+      v.appendChild(el('div', { class: 'mt-2 p-3 rounded border border-orange-300 bg-orange-50 text-orange-900 text-sm' },
+        '🕒 Atrasados (somados no bucket de hoje na projeção): ' + partes.join(' · ')));
+    }
+
+    // ---- Gráfico de projeção 60 dias ----
+    const chartCard = el('div', { class: 'card mt-2' }, [
+      el('h3', { class: 'font-semibold mb-2' }, `Projeção de saldo · próximos 60 dias · cenário ${cenarioSel || 'realista'}`),
+      el('canvas', { id: 'chart-fluxo-view', height: '90' })
+    ]);
+    v.appendChild(chartCard);
+    setTimeout(() => {
+      try {
+        if (chartRef) { try { chartRef.destroy(); } catch {} chartRef = null; }
+        const canvas = document.getElementById('chart-fluxo-view');
+        if (!canvas) return;
+        chartRef = new Chart(canvas, {
+          type: 'line',
+          data: {
+            labels: proj60.map(p => fmtDate(p.data)),
+            datasets: [
+              {
+                label: 'Saldo projetado',
+                data: proj60.map(p => p.saldo),
+                borderColor: '#185FA5',
+                backgroundColor: 'rgba(24,95,165,.10)',
+                tension: .25,
+                fill: true,
+                pointRadius: 0
+              },
+              caixaMin > 0 ? {
+                label: 'Caixa mínimo',
+                data: proj60.map(() => caixaMin),
+                borderColor: '#dc2626',
+                borderDash: [6, 4],
+                pointRadius: 0,
+                fill: false,
+                tension: 0
+              } : null,
+              {
+                label: 'Zero',
+                data: proj60.map(() => 0),
+                borderColor: '#94a3b8',
+                borderDash: [2, 4],
+                pointRadius: 0,
+                fill: false,
+                tension: 0
+              }
+            ].filter(Boolean)
+          },
+          options: {
+            plugins: { legend: { display: true, position: 'bottom' } },
+            scales: {
+              x: { ticks: { maxTicksLimit: 8 } },
+              y: { ticks: { callback: v => BRL(v) } }
+            }
+          }
+        });
+      } catch (e) { console.error('chart-fluxo-view error', e); }
+    }, 30);
 
     const todasTags = Array.from(new Set(st.movimentos.flatMap(m => m.tags || []))).sort();
     const selConta = el('select', { class: 'select' }, [el('option', { value: '' }, 'Todas as contas'), ...(st.contas || []).map(c => el('option', { value: c.id }, c.nome))]);

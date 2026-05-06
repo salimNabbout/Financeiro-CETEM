@@ -46,32 +46,67 @@ const KPI = (() => {
     const inicio = today();
     let saldo = saldoRealizado(st);
     const mapa = {};
-    // previstos de movimentos
-    st.movimentos.filter(m => m.status === 'previsto' && !m.cancelado && m.data >= inicio)
+    // Buckets separados para vencidos: somam-se em 'hoje' mas mantemos rastro
+    // pra UI mostrar tag de atraso e pro alerta de risco.
+    let vencidoEntradas = 0, vencidoSaidas = 0;
+
+    // previstos de movimentos (futuros + atrasados)
+    st.movimentos.filter(m => m.status === 'previsto' && !m.cancelado)
       .forEach(m => {
-        mapa[m.data] = mapa[m.data] || { entradas: 0, saidas: 0 };
-        if (m.tipo === 'entrada') mapa[m.data].entradas += +m.valor;
-        else mapa[m.data].saidas += +m.valor;
+        if (!m.data) return;
+        if (m.data >= inicio) {
+          mapa[m.data] = mapa[m.data] || { entradas: 0, saidas: 0 };
+          if (m.tipo === 'entrada') mapa[m.data].entradas += +m.valor;
+          else mapa[m.data].saidas += +m.valor;
+        } else {
+          // Movimento previsto no passado e nao realizado = atrasado
+          if (m.tipo === 'entrada') vencidoEntradas += +m.valor;
+          else vencidoSaidas += +m.valor;
+        }
       });
+
     // títulos a receber abertos/parciais
     st.titulosReceber.filter(t => t.status !== 'pago' && t.status !== 'cancelado')
       .forEach(t => {
-        const d = t.vencimento;
-        if (!d) return;
-        mapa[d] = mapa[d] || { entradas: 0, saidas: 0 };
-        mapa[d].entradas += (+t.valor) - (+t.valorRecebido || 0);
+        if (!t.vencimento) return;
+        const valor = (+t.valor) - (+t.valorRecebido || 0);
+        if (valor <= 0) return;
+        if (t.vencimento >= inicio) {
+          mapa[t.vencimento] = mapa[t.vencimento] || { entradas: 0, saidas: 0 };
+          mapa[t.vencimento].entradas += valor;
+        } else {
+          vencidoEntradas += valor;
+        }
       });
+
     // títulos a pagar pendentes
-    st.titulosPagar.filter(t => !t.pago)
+    st.titulosPagar.filter(t => !t.pago && !t.cancelado)
       .forEach(t => {
-        mapa[t.vencimento] = mapa[t.vencimento] || { entradas: 0, saidas: 0 };
-        mapa[t.vencimento].saidas += +t.valor;
+        if (!t.vencimento) return;
+        if (t.vencimento >= inicio) {
+          mapa[t.vencimento] = mapa[t.vencimento] || { entradas: 0, saidas: 0 };
+          mapa[t.vencimento].saidas += +t.valor;
+        } else {
+          vencidoSaidas += +t.valor;
+        }
       });
+
+    // Adiciona vencidos no bucket de hoje (com flag separada).
+    if (vencidoEntradas > 0 || vencidoSaidas > 0) {
+      mapa[inicio] = mapa[inicio] || { entradas: 0, saidas: 0 };
+      mapa[inicio].vencidoEntradas = (mapa[inicio].vencidoEntradas || 0) + vencidoEntradas;
+      mapa[inicio].vencidoSaidas = (mapa[inicio].vencidoSaidas || 0) + vencidoSaidas;
+    }
+
     const datas = Object.keys(mapa).filter(d => d >= inicio).sort().slice(0, dias);
     return datas.map(d => {
-      const e = mapa[d].entradas * f.e, s = mapa[d].saidas * f.s;
-      saldo += (e - s);
-      return { data: d, entradas: e, saidas: s, saldo };
+      const dia = mapa[d];
+      const e = (dia.entradas || 0) * f.e;
+      const s = (dia.saidas || 0) * f.s;
+      const ve = (dia.vencidoEntradas || 0) * f.e;
+      const vs = (dia.vencidoSaidas || 0) * f.s;
+      saldo += (e + ve - s - vs);
+      return { data: d, entradas: e, saidas: s, vencidoEntradas: ve, vencidoSaidas: vs, saldo };
     });
   }
 
