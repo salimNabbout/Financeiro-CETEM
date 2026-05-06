@@ -530,7 +530,15 @@ const Views = (() => {
 
   function openTituloReceber(st, t = null) {
     if (!st.clientes.length) { alert('Cadastre um cliente primeiro.'); return; }
-    const data = t || { clienteId: '', documento: '', emissao: today(), vencimento: today(), valor: 0, valorRecebido: 0, status: 'aberto', observacao: '' };
+    // Schema novo (paridade com Contas a Pagar): documento = numero da NF;
+    // numeroPedido, centroCusto, contaId, categoria, vendedor.
+    const data = t || {
+      clienteId: '', documento: '', numeroPedido: '', centroCusto: '',
+      contaId: '', vendedor: '', emissao: today(), vencimento: today(),
+      valor: 0, valorRecebido: 0,
+      categoria: (st.categorias.entrada && st.categorias.entrada[0]) || 'Vendas',
+      status: 'aberto', observacao: ''
+    };
     const body = el('div');
     const acCliente = UI.autocomplete({
       items: st.clientes,
@@ -547,18 +555,36 @@ const Views = (() => {
         });
       }
     });
+    // Lista de contas ativas para o dropdown de Conta Corrente
+    const contasAtivas = (st.contas || []).filter(c => c.ativa !== false);
+    const categoriasEntrada = (st.categorias && Array.isArray(st.categorias.entrada) && st.categorias.entrada.length)
+      ? st.categorias.entrada
+      : ['Vendas', 'Serviços', 'Outros'];
     const inp = {
-      documento: el('input', { class: 'input', value: data.documento }),
+      documento: el('input', { class: 'input', value: data.documento || '', placeholder: 'Numero da NF' }),
+      numeroPedido: el('input', { class: 'input', value: data.numeroPedido || '', placeholder: 'Numero do pedido' }),
+      centroCusto: el('input', { class: 'input', value: data.centroCusto || '', placeholder: 'Ex.: Engenharia, Comercial, Adm.' }),
+      contaId: el('select', { class: 'select' }, [
+        el('option', { value: '' }, '— selecionar conta —'),
+        ...contasAtivas.map(c => el('option', { value: c.id }, c.nome + (c.tipo ? ` (${c.tipo})` : '')))
+      ]),
+      vendedor: el('input', { class: 'input', value: data.vendedor || '', placeholder: 'Nome do vendedor' }),
       emissao: el('input', { type: 'date', class: 'input', value: data.emissao }),
       vencimento: el('input', { type: 'date', class: 'input', value: data.vencimento }),
       valor: el('input', { type: 'text', inputmode: 'decimal', class: 'input', value: fmtVal(data.valor) }),
       valorRecebido: el('input', { type: 'text', inputmode: 'decimal', class: 'input', value: fmtVal(data.valorRecebido) }),
-      observacao: el('textarea', { class: 'input', rows: 2 }, data.observacao || '')
+      categoria: el('select', { class: 'select' }, categoriasEntrada.map(c => el('option', { value: c }, c)))
     };
+    inp.categoria.value = data.categoria || categoriasEntrada[0];
+    inp.contaId.value = data.contaId || '';
+    inp.observacao = el('textarea', { class: 'input', rows: 2 }, data.observacao || '');
     body.appendChild(el('div', { class: 'grid grid-cols-2 gap-3' }, [
-      field('Cliente', acCliente.element), field('NF/Pedido', inp.documento),
+      field('Cliente', acCliente.element), field('Conta corrente', inp.contaId),
+      field('Numero da NF', inp.documento), field('Numero do pedido', inp.numeroPedido),
+      field('Centro de custo', inp.centroCusto), field('Categoria', inp.categoria),
       field('Emissão', inp.emissao), field('Vencimento', inp.vencimento),
-      field('Valor (R$)', inp.valor), field('Valor recebido', inp.valorRecebido)
+      field('Valor (R$)', inp.valor), field('Vendedor', inp.vendedor),
+      field('Valor recebido', inp.valorRecebido)
     ]));
     body.appendChild(field('Observação', inp.observacao));
     modal(t ? 'Editar título a receber' : 'Novo título a receber', body, () => {
@@ -571,7 +597,22 @@ const Views = (() => {
       const vPer = Validators.periodoCoerente(inp.emissao.value, inp.vencimento.value);
       if (!vPer.ok) { UI.toast(vPer.erro, 'r'); return false; }
       const status = vRec.value >= vValor.value ? 'pago' : vRec.value > 0 ? 'parcial' : 'aberto';
-      const payload = { id: t?.id || DB.id(), clienteId: acCliente.value, documento: inp.documento.value, emissao: vPer.emissao, vencimento: vPer.vencimento, valor: vValor.value, valorRecebido: vRec.value, status, observacao: inp.observacao.value };
+      const payload = {
+        id: t?.id || DB.id(),
+        clienteId: acCliente.value,
+        documento: inp.documento.value,
+        numeroPedido: inp.numeroPedido.value,
+        centroCusto: inp.centroCusto.value,
+        contaId: inp.contaId.value,
+        vendedor: inp.vendedor.value,
+        emissao: vPer.emissao,
+        vencimento: vPer.vencimento,
+        valor: vValor.value,
+        valorRecebido: vRec.value,
+        categoria: inp.categoria.value,
+        status,
+        observacao: inp.observacao.value
+      };
       DB.set(s => { if (t) s.titulosReceber = s.titulosReceber.map(x => x.id === t.id ? payload : x); else s.titulosReceber.push(payload); });
       UI.toast(t ? 'Título atualizado.' : 'Título cadastrado.', 'v');
     });
