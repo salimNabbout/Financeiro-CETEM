@@ -268,10 +268,20 @@
 
   // Motor de recorrências: ao abrir o app, materializa lançamentos cujo "proxima" <= hoje
   (function recor() {
-    const st = DB.get();
     const hoje = KPI.today();
+    // Horizonte de geracao: ate 60 dias a frente. Usuarios veem futuros vencimentos sem precisar esperar a data passar.
+    const horizonteDt = new Date(hoje); horizonteDt.setDate(horizonteDt.getDate() + 60);
+    const horizonte = horizonteDt.toISOString().slice(0, 10);
     let gerou = 0;
     DB.set(s => {
+      // Indice de titulos ja gerados por recorrencia (idempotencia: nao duplica se rodar multiplas vezes).
+      const idxPagar = new Set();
+      (s.titulosPagar || []).forEach(t => { if (t.recorrenciaId) idxPagar.add(t.recorrenciaId + '|' + t.vencimento); });
+      const idxReceber = new Set();
+      (s.titulosReceber || []).forEach(t => { if (t.recorrenciaId) idxReceber.add(t.recorrenciaId + '|' + t.vencimento); });
+      const idxMov = new Set();
+      (s.movimentos || []).forEach(m => { if (m.recorrenciaId) idxMov.add(m.recorrenciaId + '|' + m.data); });
+
       (s.recorrencias || []).filter(r => r.ativa).forEach(r => {
         let prox = r.proxima;
         const next = d => {
@@ -281,17 +291,63 @@
           else dt.setMonth(dt.getMonth() + 1);
           return dt.toISOString().slice(0, 10);
         };
-        while (prox && prox <= hoje) {
+        // Limite efetivo: o que vier antes — horizonte (+60d) ou dataFim da regra.
+        const limite = r.dataFim && r.dataFim < horizonte ? r.dataFim : horizonte;
+        while (prox && prox <= limite) {
           if (r.tipo === 'pagar') {
-            s.titulosPagar.push({ id: DB.id(), fornecedorId: r.contraparteId || (s.fornecedores[0]?.id), documento: r.descricao + ' (rec)', competencia: prox, vencimento: prox, valor: +r.valor, categoria: r.categoria || 'Outros', prioridade: 'obrigatorio', pago: false });
+            const chave = r.id + '|' + prox;
+            if (!idxPagar.has(chave)) {
+              s.titulosPagar.push({
+                id: DB.id(),
+                fornecedorId: r.contraparteId || (s.fornecedores[0]?.id),
+                documento: r.documento || '',
+                numeroPedido: r.numeroPedido || '',
+                centroCusto: r.centroCusto || '',
+                contaId: r.contaId || '',
+                competencia: prox,
+                vencimento: prox,
+                valor: +r.valor,
+                categoria: r.categoria || 'Outros',
+                prioridade: r.prioridade || 'obrigatorio',
+                pago: false,
+                observacao: r.observacao || '',
+                recorrenciaId: r.id
+              });
+              idxPagar.add(chave); gerou++;
+            }
           } else if (r.tipo === 'receber') {
-            s.titulosReceber.push({ id: DB.id(), clienteId: r.contraparteId || (s.clientes[0]?.id), documento: r.descricao + ' (rec)', emissao: prox, vencimento: prox, valor: +r.valor, valorRecebido: 0, status: 'aberto' });
+            const chave = r.id + '|' + prox;
+            if (!idxReceber.has(chave)) {
+              s.titulosReceber.push({
+                id: DB.id(),
+                clienteId: r.contraparteId || (s.clientes[0]?.id),
+                documento: r.documento || r.descricao || '',
+                emissao: prox,
+                vencimento: prox,
+                valor: +r.valor,
+                valorRecebido: 0,
+                status: 'aberto',
+                categoria: r.categoria,
+                centroCusto: r.centroCusto,
+                contaId: r.contaId,
+                vendedor: r.vendedor,
+                observacao: r.observacao,
+                recorrenciaId: r.id
+              });
+              idxReceber.add(chave); gerou++;
+            }
           } else {
-            s.movimentos.push({ id: DB.id(), data: prox, descricao: r.descricao + ' (rec)', categoria: r.categoria || 'Outros', tipo: r.tipoMov || 'saida', natureza: 'op', status: 'previsto', valor: +r.valor, origem: 'recorrencia' });
+            const chave = r.id + '|' + prox;
+            if (!idxMov.has(chave)) {
+              s.movimentos.push({ id: DB.id(), data: prox, descricao: r.descricao + ' (rec)', categoria: r.categoria || 'Outros', tipo: r.tipoMov || 'saida', natureza: 'op', status: 'previsto', valor: +r.valor, origem: 'recorrencia', recorrenciaId: r.id });
+              idxMov.add(chave); gerou++;
+            }
           }
-          prox = next(prox); gerou++;
+          prox = next(prox);
         }
         r.proxima = prox;
+        // Auto-encerra regra se ultrapassou dataFim
+        if (r.dataFim && prox && prox > r.dataFim) { r.ativa = false; r.encerradoEm = new Date().toISOString(); r.motivoEncerramento = 'Atingiu data fim'; }
       });
     });
     if (gerou) DB.log('recorrencias', `${gerou} lançamentos gerados`);

@@ -714,8 +714,9 @@ const Views = (() => {
     if (!rows.length) tbody.appendChild(el('tr', {}, el('td', { colspan: 9, class: 'text-center py-6 text-slate-500' }, (pagarFiltro.centroCusto || pagarFiltro.contaId) ? 'Nenhum título encontrado para o filtro aplicado.' : 'Sem títulos.')));
     rows.forEach(t => {
       const atraso = !t.pago && t.vencimento < hoje;
+      const recIcon = t.recorrenciaId ? ' 🔁' : '';
       tbody.appendChild(el('tr', {}, [
-        el('td', {}, fm[t.fornecedorId]?.nome || '—'),
+        el('td', {}, (fm[t.fornecedorId]?.nome || '—') + recIcon),
         el('td', {}, t.documento || '—'),
         el('td', {}, t.categoria || '—'),
         el('td', {}, t.centroCusto || '—'),
@@ -900,12 +901,25 @@ const Views = (() => {
         el('option', { value: 'obrigatorio' }, 'Obrigatório'),
         el('option', { value: 'negociavel' }, 'Negociável'),
         el('option', { value: 'discricionario' }, 'Discricionário')
-      ])
+      ]),
+      // ----- Recorrência mensal -----
+      recorrente: el('input', { type: 'checkbox', class: 'mr-2' }),
+      recorrenciaFim: el('input', { type: 'date', class: 'input', value: '' })
     };
     inp.categoria.value = data.categoria;
     inp.prioridade.value = data.prioridade;
     inp.contaId.value = data.contaId || '';
     inp.observacao = el('textarea', { class: 'input', rows: 2 }, data.observacao || '');
+
+    // Wrapper do bloco de fim de recorrência (escondido por padrão)
+    const recorrenciaFimWrap = el('div', { class: 'hidden col-span-2' }, [
+      el('label', { class: 'text-sm text-slate-700 block mb-1' }, 'Recorrência até (opcional — vazio = indefinido):'),
+      inp.recorrenciaFim
+    ]);
+    inp.recorrente.addEventListener('change', () => {
+      recorrenciaFimWrap.classList.toggle('hidden', !inp.recorrente.checked);
+    });
+
     body.appendChild(el('div', { class: 'grid grid-cols-2 gap-3' }, [
       field('Fornecedor', acFornecedor.element), field('Conta corrente', inp.contaId),
       field('Numero da NF', inp.documento), field('Numero do pedido', inp.numeroPedido),
@@ -913,6 +927,20 @@ const Views = (() => {
       field('Competência', inp.competencia), field('Vencimento', inp.vencimento),
       field('Valor (R$)', inp.valor), field('Prioridade', inp.prioridade)
     ]));
+
+    // Bloco da recorrência (só aparece para títulos NOVOS — editar título já existente não converte em regra)
+    if (!t) {
+      const recorrenciaBlock = el('div', { class: 'card p-3 mt-3 bg-slate-50 border border-slate-200' }, [
+        el('label', { class: 'flex items-center text-sm font-medium text-slate-800 cursor-pointer' }, [
+          inp.recorrente,
+          el('span', {}, 'Conta recorrente (gera todo mês automaticamente)')
+        ]),
+        el('div', { class: 'text-xs text-slate-500 mt-1' }, 'Ex.: aluguel, Microsoft 365, pró-labore. O sistema usa o dia do "Vencimento" acima como dia de cobrança e gera os títulos mês a mês.'),
+        el('div', { class: 'mt-2 grid grid-cols-2 gap-3' }, recorrenciaFimWrap)
+      ]);
+      body.appendChild(recorrenciaBlock);
+    }
+
     body.appendChild(field('Observação', inp.observacao));
     modal(t ? 'Editar título a pagar' : 'Novo título a pagar', body, () => {
       if (!acFornecedor.value) { UI.toast('Selecione um fornecedor da lista.', 'r'); acFornecedor.focus(); return false; }
@@ -920,6 +948,38 @@ const Views = (() => {
       if (!vValor.ok) { UI.toast(vValor.erro, 'r'); inp.valor.classList.add('input-erro'); return false; }
       const vPer = Validators.periodoCoerente(inp.competencia.value, inp.vencimento.value);
       if (!vPer.ok) { UI.toast(vPer.erro, 'r'); return false; }
+
+      // Branch RECORRENTE: cria regra em st.recorrencias e nao cria titulo individual.
+      if (!t && inp.recorrente.checked) {
+        const dataFim = inp.recorrenciaFim.value || null;
+        if (dataFim && dataFim < vPer.vencimento) { UI.toast('A data de fim da recorrência precisa ser maior que o primeiro vencimento.', 'r'); return false; }
+        const fornecedorNome = (st.fornecedores.find(f => f.id === acFornecedor.value) || {}).nome || 'Fornecedor';
+        const regra = {
+          id: DB.id(),
+          tipo: 'pagar',
+          contraparteId: acFornecedor.value,
+          descricao: 'Recorrência — ' + fornecedorNome + (inp.documento.value ? ' (' + inp.documento.value + ')' : ''),
+          documento: inp.documento.value,
+          numeroPedido: inp.numeroPedido.value,
+          centroCusto: inp.centroCusto.value,
+          contaId: inp.contaId.value,
+          observacao: inp.observacao.value,
+          valor: vValor.value,
+          categoria: inp.categoria.value,
+          prioridade: inp.prioridade.value,
+          frequencia: 'mensal',
+          proxima: vPer.vencimento,
+          dataInicio: vPer.vencimento,
+          dataFim: dataFim,
+          ativa: true,
+          criadoEm: new Date().toISOString()
+        };
+        DB.set(s => { s.recorrencias = s.recorrencias || []; s.recorrencias.push(regra); });
+        UI.toast('Recorrência criada. Os títulos serão gerados automaticamente ao abrir Contas a pagar.', 'v');
+        return;
+      }
+
+      // Branch NORMAL: titulo unico (comportamento antigo)
       const payload = {
         id: t?.id || DB.id(),
         fornecedorId: acFornecedor.value,
@@ -934,14 +994,15 @@ const Views = (() => {
         prioridade: inp.prioridade.value,
         pago: t?.pago || false,
         dataPagamento: t?.dataPagamento,
-        observacao: inp.observacao.value
+        observacao: inp.observacao.value,
+        recorrenciaId: t?.recorrenciaId || null
       };
       DB.set(s => { if (t) s.titulosPagar = s.titulosPagar.map(x => x.id === t.id ? payload : x); else s.titulosPagar.push(payload); });
       UI.toast(t ? 'Título atualizado.' : 'Título cadastrado.', 'v');
     });
   }
 
-  function openPagamento(st, t) {
+    function openPagamento(st, t) {
     const body = el('div');
     const inp = { data: el('input', { type: 'date', class: 'input', value: today() }) };
     body.appendChild(field(`Confirmar pagamento de ${BRL(t.valor)}. Data:`, inp.data));
@@ -2116,67 +2177,135 @@ const Views = (() => {
   // ================= RECORRÊNCIAS =================
   function recorrencias(st) {
     const v = document.getElementById('view'); v.innerHTML = '';
+    const fm = fornecedoresMap(st);
+    const cm = clientesMap(st);
+    const contasMap = Object.fromEntries((st.contas || []).map(c => [c.id, c.nome]));
+    const ativas = (st.recorrencias || []).filter(r => r.ativa);
     v.appendChild(el('div', { class: 'flex justify-between items-center' }, [
-      el('div', { class: 'text-sm text-slate-600' }, `${(st.recorrencias || []).filter(r => r.ativa).length} recorrências ativas`),
+      el('div', { class: 'text-sm text-slate-600' }, `${ativas.length} recorrência(s) ativa(s) · gerando títulos automaticamente nos próximos 60 dias`),
       can('editar') ? el('button', { class: 'btn btn-p', onclick: () => openRecorrencia(st) }, '+ Nova recorrência') : null
     ].filter(Boolean)));
 
     const tbl = el('table', {});
-    tbl.appendChild(el('thead', {}, el('tr', {}, ['Descrição', 'Tipo', 'Frequência', 'Próxima', 'Valor', 'Categoria', 'Ativa', 'Ações'].map(h => el('th', {}, h)))));
+    tbl.appendChild(el('thead', {}, el('tr', {}, [
+      'Tipo', 'Contraparte', 'Categoria', 'Centro de custo', 'Conta corrente', 'Valor', 'Dia', 'Início', 'Fim', 'Próxima', 'Status', 'Ações'
+    ].map(h => el('th', {}, h)))));
     const tbody = el('tbody');
     const list = st.recorrencias || [];
-    if (!list.length) tbody.appendChild(el('tr', {}, el('td', { colspan: 8, class: 'text-center py-6 text-slate-500' }, 'Nenhuma recorrência cadastrada.')));
-    list.forEach(r => tbody.appendChild(el('tr', {}, [
-      el('td', {}, r.descricao),
-      el('td', {}, badge(r.tipo, r.tipo === 'receber' ? 'v' : r.tipo === 'pagar' ? 'r' : 'g')),
-      el('td', {}, r.frequencia),
-      el('td', {}, r.proxima ? fmtDate(r.proxima) : '—'),
-      el('td', {}, BRL(r.valor)),
-      el('td', {}, r.categoria || '—'),
-      el('td', {}, r.ativa ? badge('ativa', 'v') : badge('pausada', 'g')),
-      el('td', {}, el('div', { class: 'flex gap-1' }, [
-        can('editar') ? el('button', { class: 'btn btn-s', onclick: () => DB.set(s => { const x = s.recorrencias.find(i => i.id === r.id); x.ativa = !x.ativa; }) }, r.ativa ? 'Pausar' : 'Ativar') : null,
-        can('editar') ? el('button', { class: 'btn btn-s', onclick: () => openRecorrencia(st, r) }, 'Editar') : null,
-        can('editar') ? el('button', { class: 'btn btn-d', onclick: () => confirmar('Excluir recorrência?', () => DB.set(s => { s.recorrencias = s.recorrencias.filter(i => i.id !== r.id); })) }, '×') : null
-      ].filter(Boolean)))
-    ])));
+    if (!list.length) tbody.appendChild(el('tr', {}, el('td', { colspan: 12, class: 'text-center py-6 text-slate-500' }, 'Nenhuma recorrência cadastrada. Marque a caixa "Conta recorrente" ao criar um título a pagar para gerar uma.')));
+    list.forEach(r => {
+      const contraparte = r.tipo === 'pagar' ? (fm[r.contraparteId]?.nome || '—')
+                         : r.tipo === 'receber' ? (cm[r.contraparteId]?.nome || '—')
+                         : (r.descricao || '—');
+      const dia = r.proxima ? r.proxima.slice(8, 10) : (r.dataInicio ? r.dataInicio.slice(8, 10) : '—');
+      tbody.appendChild(el('tr', {}, [
+        el('td', {}, badge(r.tipo, r.tipo === 'receber' ? 'v' : r.tipo === 'pagar' ? 'r' : 'g')),
+        el('td', {}, contraparte),
+        el('td', {}, r.categoria || '—'),
+        el('td', {}, r.centroCusto || '—'),
+        el('td', {}, contasMap[r.contaId] || '—'),
+        el('td', {}, BRL(r.valor)),
+        el('td', {}, dia),
+        el('td', {}, r.dataInicio ? fmtDate(r.dataInicio) : '—'),
+        el('td', {}, r.dataFim ? fmtDate(r.dataFim) : 'indefinido'),
+        el('td', {}, r.proxima ? fmtDate(r.proxima) : '—'),
+        el('td', {}, r.ativa ? badge('ativa', 'v') : badge('encerrada', 'g')),
+        el('td', {}, el('div', { class: 'flex gap-1' }, [
+          can('editar') && r.ativa ? el('button', { class: 'btn btn-s', onclick: () => openRecorrencia(st, r) }, 'Editar') : null,
+          can('editar') && r.ativa ? el('button', { class: 'btn btn-d', onclick: () => UI.pedirMotivo({ titulo: 'Encerrar recorrência' }, (motivo) => {
+            DB.set(s => {
+              const x = s.recorrencias.find(i => i.id === r.id);
+              if (x) { x.ativa = false; x.encerradoEm = new Date().toISOString(); x.motivoEncerramento = motivo; }
+            });
+            UI.toast('Recorrência encerrada. Títulos já gerados foram preservados.', 'v');
+          }) }, 'Encerrar') : null
+        ].filter(Boolean)))
+      ]));
+    });
     tbl.appendChild(tbody);
     v.appendChild(el('div', { class: 'card p-0 overflow-hidden' }, tbl));
   }
 
   function openRecorrencia(st, r = null) {
-    const data = r || { tipo: 'pagar', descricao: '', valor: 0, categoria: '', frequencia: 'mensal', proxima: today(), ativa: true, contraparteId: '', tipoMov: 'saida' };
-    const body = el('div');
-    const inp = {
-      tipo: el('select', { class: 'select' }, [
-        el('option', { value: 'pagar' }, 'Gerar título a pagar'),
-        el('option', { value: 'receber' }, 'Gerar título a receber'),
-        el('option', { value: 'movimento' }, 'Gerar lançamento direto no caixa')
-      ]),
-      descricao: el('input', { class: 'input', value: data.descricao }),
-      valor: el('input', { type: 'text', inputmode: 'decimal', class: 'input', value: fmtVal(data.valor) }),
-      categoria: el('input', { class: 'input', value: data.categoria || '' }),
-      frequencia: el('select', { class: 'select' }, [
-        el('option', { value: 'mensal' }, 'Mensal'),
-        el('option', { value: 'semanal' }, 'Semanal'),
-        el('option', { value: 'anual' }, 'Anual')
-      ]),
-      proxima: el('input', { type: 'date', class: 'input', value: data.proxima }),
-      ativa: el('select', { class: 'select' }, [el('option', { value: '1' }, 'Ativa'), el('option', { value: '0' }, 'Pausada')])
+    // Edicao de recorrencia (criada via checkbox em Contas a Pagar OU criada manualmente aqui).
+    const data = r || {
+      tipo: 'pagar', descricao: '', contraparteId: '',
+      documento: '', numeroPedido: '', centroCusto: '', contaId: '',
+      valor: 0, categoria: '', frequencia: 'mensal',
+      proxima: today(), dataInicio: today(), dataFim: null,
+      ativa: true, prioridade: 'obrigatorio', observacao: '', tipoMov: 'saida'
     };
-    inp.tipo.value = data.tipo;
-    inp.frequencia.value = data.frequencia;
-    inp.ativa.value = data.ativa ? '1' : '0';
+    const body = el('div');
+    const contasAtivas = (st.contas || []).filter(c => c.ativa !== false);
+    const acFornecedor = UI.autocomplete({
+      items: st.fornecedores || [],
+      getLabel: f => f.nome,
+      getMeta: f => [f.documento, f.cidade].filter(Boolean).join(' · '),
+      getSearch: f => `${f.nome} ${f.razaoSocial || ''} ${f.documento || ''} ${f.cidade || ''}`,
+      placeholder: 'Buscar fornecedor por nome ou CNPJ...',
+      initialId: data.contraparteId
+    });
+    const inp = {
+      documento: el('input', { class: 'input', value: data.documento || '', placeholder: 'Numero da NF' }),
+      numeroPedido: el('input', { class: 'input', value: data.numeroPedido || '', placeholder: 'Numero do pedido' }),
+      centroCusto: el('input', { class: 'input', value: data.centroCusto || '', placeholder: 'Ex.: Engenharia' }),
+      contaId: el('select', { class: 'select' }, [
+        el('option', { value: '' }, '— selecionar conta —'),
+        ...contasAtivas.map(c => el('option', { value: c.id }, c.nome + (c.tipo ? ` (${c.tipo})` : '')))
+      ]),
+      valor: el('input', { type: 'text', inputmode: 'decimal', class: 'input', value: fmtVal(data.valor) }),
+      categoria: el('select', { class: 'select' }, ((st.categorias && st.categorias.saida) || ['Outros']).map(c => el('option', { value: c }, c))),
+      proxima: el('input', { type: 'date', class: 'input', value: data.proxima || today() }),
+      dataFim: el('input', { type: 'date', class: 'input', value: data.dataFim || '' }),
+      observacao: el('textarea', { class: 'input', rows: 2 }, data.observacao || '')
+    };
+    inp.contaId.value = data.contaId || '';
+    inp.categoria.value = data.categoria || ((st.categorias && st.categorias.saida && st.categorias.saida[0]) || 'Outros');
     body.appendChild(el('div', { class: 'grid grid-cols-2 gap-3' }, [
-      field('Tipo', inp.tipo), field('Frequência', inp.frequencia),
-      field('Descrição', inp.descricao), field('Categoria', inp.categoria),
-      field('Valor (R$)', inp.valor), field('Próxima ocorrência', inp.proxima),
-      field('Status', inp.ativa)
+      field('Fornecedor', acFornecedor.element), field('Conta corrente', inp.contaId),
+      field('Numero da NF', inp.documento), field('Numero do pedido', inp.numeroPedido),
+      field('Centro de custo', inp.centroCusto), field('Categoria', inp.categoria),
+      field('Próxima ocorrência', inp.proxima), field('Recorrência até (vazio = indefinido)', inp.dataFim),
+      field('Valor (R$)', inp.valor)
     ]));
+    body.appendChild(field('Observação', inp.observacao));
+    if (r) {
+      body.appendChild(el('div', { class: 'mt-3 p-3 bg-amber-50 border border-amber-200 rounded text-sm text-amber-900' },
+        'Mudanças no valor afetam apenas títulos futuros. Títulos já gerados continuam com o valor antigo.'));
+    }
     modal(r ? 'Editar recorrência' : 'Nova recorrência', body, () => {
-      if (!inp.descricao.value.trim() || !+inp.valor.value) { alert('Descrição e valor obrigatórios.'); return false; }
-      const payload = { id: r?.id || DB.id(), tipo: inp.tipo.value, descricao: inp.descricao.value.trim(), valor: +inp.valor.value, categoria: inp.categoria.value, frequencia: inp.frequencia.value, proxima: inp.proxima.value, ativa: inp.ativa.value === '1', contraparteId: data.contraparteId, tipoMov: data.tipoMov };
-      DB.set(s => { s.recorrencias = s.recorrencias || []; if (r) s.recorrencias = s.recorrencias.map(x => x.id === r.id ? payload : x); else s.recorrencias.push(payload); });
+      if (!acFornecedor.value) { UI.toast('Selecione um fornecedor.', 'r'); acFornecedor.focus(); return false; }
+      const vValor = Validators.valor(inp.valor.value);
+      if (!vValor.ok) { UI.toast(vValor.erro, 'r'); inp.valor.classList.add('input-erro'); return false; }
+      const dataFim = inp.dataFim.value || null;
+      if (dataFim && dataFim < inp.proxima.value) { UI.toast('Recorrência até precisa ser maior que a próxima ocorrência.', 'r'); return false; }
+      const fornecedorNome = (st.fornecedores.find(f => f.id === acFornecedor.value) || {}).nome || 'Fornecedor';
+      const payload = {
+        id: r?.id || DB.id(),
+        tipo: 'pagar',
+        contraparteId: acFornecedor.value,
+        descricao: 'Recorrência — ' + fornecedorNome + (inp.documento.value ? ' (' + inp.documento.value + ')' : ''),
+        documento: inp.documento.value,
+        numeroPedido: inp.numeroPedido.value,
+        centroCusto: inp.centroCusto.value,
+        contaId: inp.contaId.value,
+        observacao: inp.observacao.value,
+        valor: vValor.value,
+        categoria: inp.categoria.value,
+        prioridade: data.prioridade || 'obrigatorio',
+        frequencia: 'mensal',
+        proxima: inp.proxima.value,
+        dataInicio: data.dataInicio || inp.proxima.value,
+        dataFim: dataFim,
+        ativa: r ? (data.ativa !== false) : true,
+        criadoEm: data.criadoEm || new Date().toISOString()
+      };
+      DB.set(s => {
+        s.recorrencias = s.recorrencias || [];
+        if (r) s.recorrencias = s.recorrencias.map(x => x.id === r.id ? payload : x);
+        else s.recorrencias.push(payload);
+      });
+      UI.toast(r ? 'Recorrência atualizada.' : 'Recorrência criada.', 'v');
     });
   }
 
