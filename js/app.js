@@ -272,6 +272,16 @@
     // Horizonte de geracao: ate 60 dias a frente. Usuarios veem futuros vencimentos sem precisar esperar a data passar.
     const horizonteDt = new Date(hoje); horizonteDt.setDate(horizonteDt.getDate() + 60);
     const horizonte = horizonteDt.toISOString().slice(0, 10);
+    // Ajusta data ISO (YYYY-MM-DD) para dia util: se cair em sabado/domingo,
+    // retorna a sexta-feira anterior. Nao trata feriados ainda.
+    const ajustarDiaUtil = (dataIso) => {
+      if (!dataIso) return dataIso;
+      const dt = new Date(dataIso + 'T12:00:00');
+      const dow = dt.getDay(); // 0=dom, 6=sab
+      if (dow === 6) dt.setDate(dt.getDate() - 1);      // sabado -> sexta
+      else if (dow === 0) dt.setDate(dt.getDate() - 2); // domingo -> sexta
+      return dt.toISOString().slice(0, 10);
+    };
     let gerou = 0;
     DB.set(s => {
       // Indice de titulos ja gerados por recorrencia (idempotencia: nao duplica se rodar multiplas vezes).
@@ -294,8 +304,11 @@
         // Limite efetivo: o que vier antes — horizonte (+60d) ou dataFim da regra.
         const limite = r.dataFim && r.dataFim < horizonte ? r.dataFim : horizonte;
         while (prox && prox <= limite) {
+          // 'prox' e a data desejada (preserva dia-do-mes para o proximo ciclo).
+          // 'venc' e a data efetiva do titulo (recuada para sexta se cair no fim de semana).
+          const venc = ajustarDiaUtil(prox);
           if (r.tipo === 'pagar') {
-            const chave = r.id + '|' + prox;
+            const chave = r.id + '|' + venc;
             if (!idxPagar.has(chave)) {
               s.titulosPagar.push({
                 id: DB.id(),
@@ -304,8 +317,8 @@
                 numeroPedido: r.numeroPedido || '',
                 centroCusto: r.centroCusto || '',
                 contaId: r.contaId || '',
-                competencia: prox,
-                vencimento: prox,
+                competencia: venc,
+                vencimento: venc,
                 valor: +r.valor,
                 categoria: r.categoria || 'Outros',
                 prioridade: r.prioridade || 'obrigatorio',
@@ -316,14 +329,14 @@
               idxPagar.add(chave); gerou++;
             }
           } else if (r.tipo === 'receber') {
-            const chave = r.id + '|' + prox;
+            const chave = r.id + '|' + venc;
             if (!idxReceber.has(chave)) {
               s.titulosReceber.push({
                 id: DB.id(),
                 clienteId: r.contraparteId || (s.clientes[0]?.id),
                 documento: r.documento || r.descricao || '',
-                emissao: prox,
-                vencimento: prox,
+                emissao: venc,
+                vencimento: venc,
                 valor: +r.valor,
                 valorRecebido: 0,
                 status: 'aberto',
@@ -337,9 +350,9 @@
               idxReceber.add(chave); gerou++;
             }
           } else {
-            const chave = r.id + '|' + prox;
+            const chave = r.id + '|' + venc;
             if (!idxMov.has(chave)) {
-              s.movimentos.push({ id: DB.id(), data: prox, descricao: r.descricao + ' (rec)', categoria: r.categoria || 'Outros', tipo: r.tipoMov || 'saida', natureza: 'op', status: 'previsto', valor: +r.valor, origem: 'recorrencia', recorrenciaId: r.id });
+              s.movimentos.push({ id: DB.id(), data: venc, descricao: r.descricao + ' (rec)', categoria: r.categoria || 'Outros', tipo: r.tipoMov || 'saida', natureza: 'op', status: 'previsto', valor: +r.valor, origem: 'recorrencia', recorrenciaId: r.id });
               idxMov.add(chave); gerou++;
             }
           }
