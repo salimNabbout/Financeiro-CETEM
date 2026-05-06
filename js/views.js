@@ -2209,12 +2209,21 @@ const Views = (() => {
       const temItem = !!tot && (tot.receber > 0 || tot.pagar > 0);
       const borda = isHoje ? 'border-blue-500 border-2' : 'border-slate-200';
       const cursor = temItem ? 'cursor-pointer hover:bg-slate-50' : '';
-      const cell = el('div', {
+      // Atributos basicos da celula. Adiciona onclick somente se houver itens
+      // (evita passar null para addEventListener — alguns browsers reclamam).
+      const cellAttrs = {
         class: `min-h-24 border ${borda} rounded p-2 text-sm flex flex-col ${cursor}`,
-        title: temItem ? 'Clique para ver os títulos do dia' : '',
-        onclick: temItem ? () => { calDiaSel = iso; calendario(DB.get()); } : null
-      }, [
-        el('div', { class: 'font-bold text-base mb-1 ' + (isHoje ? 'text-blue-600' : 'text-slate-800') }, String(d)),
+        style: temItem ? 'user-select:none;' : ''
+      };
+      if (temItem) {
+        cellAttrs.title = 'Clique para ver os títulos do dia';
+        cellAttrs.onclick = () => { calDiaSel = iso; calendario(DB.get()); };
+      }
+      const cell = el('div', cellAttrs, [
+        el('div', { class: 'flex justify-between items-center mb-1' }, [
+          el('div', { class: 'font-bold text-base ' + (isHoje ? 'text-blue-600' : 'text-slate-800') }, String(d)),
+          temItem ? el('span', { class: 'text-xs text-slate-400', title: 'Abrir detalhes do dia' }, '🔍') : null
+        ].filter(Boolean)),
         tot ? el('div', { class: 'space-y-0.5' }, [
           tot.receber > 0 ? el('div', { class: 'text-green-700 font-bold truncate', title: tot.qtdR + ' título(s) a receber' }, '+ ' + BRL(tot.receber)) : null,
           tot.pagar > 0 ? el('div', { class: 'text-red-700 font-bold truncate', title: tot.qtdP + ' título(s) a pagar' }, '− ' + BRL(tot.pagar)) : null
