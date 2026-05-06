@@ -93,6 +93,8 @@ const DB = (() => {
     empresas: [],
     empresaAtivaId: null,
     perfilAtivo: 'socio',
+    userEmail: null,           // email do usuario logado (Supabase Auth)
+    userId: null,              // user_id da sessao
     modoAvancado: false
   };
   const listeners = new Set();
@@ -150,6 +152,18 @@ const DB = (() => {
         err.code = 'NAO_AUTENTICADO';
         throw err;
       }
+      // Captura email/userId da sessao para registro de responsavel em auditoria
+      try {
+        meta.userEmail = (session.user && session.user.email) || null;
+        meta.userId = (session.user && session.user.id) || null;
+      } catch {}
+      // Listener: atualiza email quando login/logout ocorre durante a sessao
+      try {
+        sb.auth.onAuthStateChange((_event, sess) => {
+          meta.userEmail = (sess && sess.user && sess.user.email) || null;
+          meta.userId = (sess && sess.user && sess.user.id) || null;
+        });
+      } catch {}
 
       // Carrega lista de empresas
       const { data: empresas, error: eEmp } = await sb
@@ -333,7 +347,7 @@ const DB = (() => {
       state = empty();
       state.auditoria = auditoriaPreservada;
       // Registra o proprio reset na auditoria preservada
-      auditAppend({ ts: new Date().toISOString(), perfil: meta.perfilAtivo, acao: 'reset-empresa', detalhe: `motivo=Reset de dados via UI; auditoria preservada com ${auditoriaPreservada.length} eventos` });
+      auditAppend({ ts: new Date().toISOString(), perfil: meta.perfilAtivo, email: meta.userEmail, acao: 'reset-empresa', detalhe: `motivo=Reset de dados via UI; auditoria preservada com ${auditoriaPreservada.length} eventos` });
       _allowEmptySave = true;
       try { save(); } finally { setTimeout(() => { _allowEmptySave = false; }, 5000); }
     },
@@ -348,12 +362,12 @@ const DB = (() => {
       if (!v.ok) return { ok: false, erro: v.erro };
       state = mergeState(empty(), data);
       save();
-      auditAppend({ ts: new Date().toISOString(), perfil: meta.perfilAtivo, acao: 'import', detalhe: `origem=${origem}; chaves=${Object.keys(data).join(',')}` });
+      auditAppend({ ts: new Date().toISOString(), perfil: meta.perfilAtivo, email: meta.userEmail, acao: 'import', detalhe: `origem=${origem}; chaves=${Object.keys(data).join(',')}` });
       return { ok: true };
     },
     subscribe: (fn) => { listeners.add(fn); return () => listeners.delete(fn); },
     log: (acao, detalhe) => {
-      const ev = { ts: new Date().toISOString(), perfil: meta.perfilAtivo, acao, detalhe };
+      const ev = { ts: new Date().toISOString(), perfil: meta.perfilAtivo, email: meta.userEmail, acao, detalhe };
       auditAppend(ev);
       save();
     },
@@ -372,10 +386,10 @@ const DB = (() => {
         const t = s.titulosReceber.find(x => x.id === tituloId);
         if (!t) return;
         t.status = 'cancelado';
-        t.cancelamento = { ts: new Date().toISOString(), perfil: meta.perfilAtivo, motivo: m };
+        t.cancelamento = { ts: new Date().toISOString(), perfil: meta.perfilAtivo, email: meta.userEmail, motivo: m };
         achou = true;
       });
-      if (achou) auditAppend({ ts: new Date().toISOString(), perfil: meta.perfilAtivo, acao: 'cancelar-receber', detalhe: `tituloId=${tituloId}; motivo=${m}` });
+      if (achou) auditAppend({ ts: new Date().toISOString(), perfil: meta.perfilAtivo, email: meta.userEmail, acao: 'cancelar-receber', detalhe: `tituloId=${tituloId}; motivo=${m}` });
       return achou ? { ok: true } : { ok: false, erro: 'Titulo nao encontrado.' };
     },
     cancelarTituloPagar: (tituloId, motivo) => {
@@ -387,10 +401,10 @@ const DB = (() => {
         if (!t) return;
         if (t.pago) return;
         t.cancelado = true;
-        t.cancelamento = { ts: new Date().toISOString(), perfil: meta.perfilAtivo, motivo: m };
+        t.cancelamento = { ts: new Date().toISOString(), perfil: meta.perfilAtivo, email: meta.userEmail, motivo: m };
         achou = true;
       });
-      if (achou) auditAppend({ ts: new Date().toISOString(), perfil: meta.perfilAtivo, acao: 'cancelar-pagar', detalhe: `tituloId=${tituloId}; motivo=${m}` });
+      if (achou) auditAppend({ ts: new Date().toISOString(), perfil: meta.perfilAtivo, email: meta.userEmail, acao: 'cancelar-pagar', detalhe: `tituloId=${tituloId}; motivo=${m}` });
       return achou ? { ok: true } : { ok: false, erro: 'Titulo nao encontrado ou ja pago.' };
     },
     cancelarMovimento: (movId, motivo) => {
@@ -402,10 +416,10 @@ const DB = (() => {
         if (!mv) return;
         if (mv.origem === 'baixa-receber' || mv.origem === 'baixa-pagar') return;
         mv.cancelado = true;
-        mv.cancelamento = { ts: new Date().toISOString(), perfil: meta.perfilAtivo, motivo: m };
+        mv.cancelamento = { ts: new Date().toISOString(), perfil: meta.perfilAtivo, email: meta.userEmail, motivo: m };
         achou = true;
       });
-      if (achou) auditAppend({ ts: new Date().toISOString(), perfil: meta.perfilAtivo, acao: 'cancelar-movimento', detalhe: `movId=${movId}; motivo=${m}` });
+      if (achou) auditAppend({ ts: new Date().toISOString(), perfil: meta.perfilAtivo, email: meta.userEmail, acao: 'cancelar-movimento', detalhe: `movId=${movId}; motivo=${m}` });
       return achou ? { ok: true } : { ok: false, erro: 'Movimento nao encontrado ou e fruto de baixa (requer estorno).' };
     },
     // Reverte um pagamento: marca titulo como pendente (pago=false) e cancela
@@ -419,18 +433,18 @@ const DB = (() => {
         if (!t || !t.pago || t.cancelado) return;
         t.pago = false;
         t.dataPagamento = null;
-        t.reversoes = (t.reversoes || []).concat([{ ts: new Date().toISOString(), perfil: meta.perfilAtivo, motivo: m }]);
+        t.reversoes = (t.reversoes || []).concat([{ ts: new Date().toISOString(), perfil: meta.perfilAtivo, email: meta.userEmail, motivo: m }]);
         // Cancela movimentos vinculados (origem=baixa-pagar e tituloId)
         (s.movimentos || []).forEach(mv => {
           if (mv.origem === 'baixa-pagar' && mv.tituloId === tituloId && !mv.cancelado) {
             mv.cancelado = true;
-            mv.cancelamento = { ts: new Date().toISOString(), perfil: meta.perfilAtivo, motivo: 'Reversao de pagamento: ' + m };
+            mv.cancelamento = { ts: new Date().toISOString(), perfil: meta.perfilAtivo, email: meta.userEmail, motivo: 'Reversao de pagamento: ' + m };
             movsRevertidos++;
           }
         });
         achou = true;
       });
-      if (achou) auditAppend({ ts: new Date().toISOString(), perfil: meta.perfilAtivo, acao: 'reverter-pagamento', detalhe: `tituloId=${tituloId}; movsRevertidos=${movsRevertidos}; motivo=${m}` });
+      if (achou) auditAppend({ ts: new Date().toISOString(), perfil: meta.perfilAtivo, email: meta.userEmail, acao: 'reverter-pagamento', detalhe: `tituloId=${tituloId}; movsRevertidos=${movsRevertidos}; motivo=${m}` });
       return achou ? { ok: true, movsRevertidos } : { ok: false, erro: 'Titulo nao encontrado, ja pendente ou cancelado.' };
     },
     // Reverte um recebimento (pago/parcial -> aberto) e cancela movimentos vinculados.
@@ -443,17 +457,17 @@ const DB = (() => {
         if (!t || t.status === 'cancelado' || t.status === 'aberto') return;
         t.valorRecebido = 0;
         t.status = 'aberto';
-        t.reversoes = (t.reversoes || []).concat([{ ts: new Date().toISOString(), perfil: meta.perfilAtivo, motivo: m }]);
+        t.reversoes = (t.reversoes || []).concat([{ ts: new Date().toISOString(), perfil: meta.perfilAtivo, email: meta.userEmail, motivo: m }]);
         (s.movimentos || []).forEach(mv => {
           if (mv.origem === 'baixa-receber' && mv.tituloId === tituloId && !mv.cancelado) {
             mv.cancelado = true;
-            mv.cancelamento = { ts: new Date().toISOString(), perfil: meta.perfilAtivo, motivo: 'Reversao de recebimento: ' + m };
+            mv.cancelamento = { ts: new Date().toISOString(), perfil: meta.perfilAtivo, email: meta.userEmail, motivo: 'Reversao de recebimento: ' + m };
             movsRevertidos++;
           }
         });
         achou = true;
       });
-      if (achou) auditAppend({ ts: new Date().toISOString(), perfil: meta.perfilAtivo, acao: 'reverter-recebimento', detalhe: `tituloId=${tituloId}; movsRevertidos=${movsRevertidos}; motivo=${m}` });
+      if (achou) auditAppend({ ts: new Date().toISOString(), perfil: meta.perfilAtivo, email: meta.userEmail, acao: 'reverter-recebimento', detalhe: `tituloId=${tituloId}; movsRevertidos=${movsRevertidos}; motivo=${m}` });
       return achou ? { ok: true, movsRevertidos } : { ok: false, erro: 'Titulo nao encontrado, ja aberto ou cancelado.' };
     },
 
@@ -532,7 +546,7 @@ const DB = (() => {
       sb.from('empresas').select('state').eq('id', meta.empresaAtivaId).single().then(({ data, error }) => {
         if (!error && data) { state = mergeState(empty(), data.state || {}); emit(); }
       });
-      auditAppend({ ts: new Date().toISOString(), perfil: meta.perfilAtivo, acao: 'remover-empresa', detalhe: `eid=${eid}` });
+      auditAppend({ ts: new Date().toISOString(), perfil: meta.perfilAtivo, email: meta.userEmail, acao: 'remover-empresa', detalhe: `eid=${eid}` });
       return true;
     },
 
@@ -562,7 +576,7 @@ const DB = (() => {
       if (!snap) return false;
       state = mergeState(empty(), snap.data);
       save();
-      auditAppend({ ts: new Date().toISOString(), perfil: meta.perfilAtivo, acao: 'restore-snapshot', detalhe: `ts=${ts}; label=${snap.label || ''}` });
+      auditAppend({ ts: new Date().toISOString(), perfil: meta.perfilAtivo, email: meta.userEmail, acao: 'restore-snapshot', detalhe: `ts=${ts}; label=${snap.label || ''}` });
       return true;
     },
     deleteSnapshot: (ts) => {

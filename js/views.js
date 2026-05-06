@@ -1785,13 +1785,13 @@ const Views = (() => {
         const ref = `${fornecedor} · NF ${t.documento || '—'} · ${BRL(t.valor)}`;
         if (t.cancelado && t.cancelamento) {
           eventos.push({
-            ts: t.cancelamento.ts, perfil: t.cancelamento.perfil,
+            ts: t.cancelamento.ts, perfil: t.cancelamento.perfil, email: t.cancelamento.email,
             tipo: 'Cancelamento de título a pagar', item: ref,
             motivo: t.cancelamento.motivo, sev: 'r'
           });
         }
         (t.reversoes || []).forEach(r => eventos.push({
-          ts: r.ts, perfil: r.perfil,
+          ts: r.ts, perfil: r.perfil, email: r.email,
           tipo: 'Reversão de pagamento', item: ref,
           motivo: r.motivo, sev: 'a'
         }));
@@ -1803,13 +1803,13 @@ const Views = (() => {
         const ref = `${cliente} · NF ${t.documento || '—'} · ${BRL(t.valor)}`;
         if (t.cancelado && t.cancelamento) {
           eventos.push({
-            ts: t.cancelamento.ts, perfil: t.cancelamento.perfil,
+            ts: t.cancelamento.ts, perfil: t.cancelamento.perfil, email: t.cancelamento.email,
             tipo: 'Cancelamento de título a receber', item: ref,
             motivo: t.cancelamento.motivo, sev: 'r'
           });
         }
         (t.reversoes || []).forEach(r => eventos.push({
-          ts: r.ts, perfil: r.perfil,
+          ts: r.ts, perfil: r.perfil, email: r.email,
           tipo: 'Reversão de recebimento', item: ref,
           motivo: r.motivo, sev: 'a'
         }));
@@ -1820,7 +1820,7 @@ const Views = (() => {
         if (m.cancelado && m.cancelamento) {
           const ref = `${m.descricao || '—'} · ${BRL(m.valor)} · ${m.data || ''}`;
           eventos.push({
-            ts: m.cancelamento.ts, perfil: m.cancelamento.perfil,
+            ts: m.cancelamento.ts, perfil: m.cancelamento.perfil, email: m.cancelamento.email,
             tipo: 'Cancelamento de movimento', item: ref,
             motivo: m.cancelamento.motivo, sev: 'r'
           });
@@ -1835,7 +1835,7 @@ const Views = (() => {
                             : (r.descricao || '—');
           const ref = `Recorrência (${r.tipo}) · ${contraparte} · ${BRL(r.valor)}`;
           eventos.push({
-            ts: r.encerradoEm, perfil: r.encerradoPor || '—',
+            ts: r.encerradoEm, perfil: r.encerradoPor || '—', email: r.encerradoEmail || null,
             tipo: 'Encerramento de recorrência', item: ref,
             motivo: r.motivoEncerramento || '—', sev: 'g'
           });
@@ -1861,7 +1861,7 @@ const Views = (() => {
           'pagamento': 'Registro de pagamento'
         })[acao] || (a.acao || '—');
         eventos.push({
-          ts: a.ts, perfil: a.perfil || '—',
+          ts: a.ts, perfil: a.perfil || '—', email: a.email || null,
           tipo: tipoLabel, item: '—',
           motivo: extrairMotivo(a.detalhe), sev: 'g'
         });
@@ -1935,7 +1935,7 @@ const Views = (() => {
 
     // ---------- Planilha ----------
     const tbl = el('table', {});
-    tbl.appendChild(el('thead', {}, el('tr', {}, ['Data', 'Hora', 'Perfil', 'Tipo de ação', 'Item', 'Justificativa'].map(h => el('th', {}, h)))));
+    tbl.appendChild(el('thead', {}, el('tr', {}, ['Data', 'Hora', 'Responsável (e-mail)', 'Perfil', 'Tipo de ação', 'Item', 'Justificativa'].map(h => el('th', {}, h)))));
     const tbody = el('tbody');
     eventos.forEach(e => {
       const dt = e.ts ? new Date(e.ts) : null;
@@ -1945,6 +1945,7 @@ const Views = (() => {
       tbody.appendChild(el('tr', {}, [
         el('td', { class: 'whitespace-nowrap' }, data),
         el('td', { class: 'whitespace-nowrap font-mono text-xs' }, hora),
+        el('td', { class: 'text-xs font-mono' }, e.email || '—'),
         el('td', {}, e.perfil || '—'),
         el('td', { class: corLinha + ' font-semibold' }, e.tipo || '—'),
         el('td', {}, e.item || '—'),
@@ -1957,12 +1958,12 @@ const Views = (() => {
 
   // Exporta auditoria como CSV
   function exportarAuditoriaCSV(eventos) {
-    const linhas = [['Data', 'Hora', 'Perfil', 'Tipo de acao', 'Item', 'Justificativa']];
+    const linhas = [['Data', 'Hora', 'Responsavel (email)', 'Perfil', 'Tipo de acao', 'Item', 'Justificativa']];
     eventos.forEach(e => {
       const dt = e.ts ? new Date(e.ts) : null;
       const data = dt && !isNaN(dt) ? dt.toLocaleDateString('pt-BR') : '';
       const hora = dt && !isNaN(dt) ? dt.toLocaleTimeString('pt-BR') : '';
-      linhas.push([data, hora, e.perfil || '', e.tipo || '', e.item || '', e.motivo || '']);
+      linhas.push([data, hora, e.email || '', e.perfil || '', e.tipo || '', e.item || '', e.motivo || '']);
     });
     const csv = linhas.map(l => l.map(c => `"${String(c).replace(/"/g, '""')}"`).join(';')).join('\n');
     const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8;' });
@@ -2921,9 +2922,16 @@ const Views = (() => {
         el('td', {}, el('div', { class: 'flex gap-1' }, [
           can('editar') && r.ativa ? el('button', { class: 'btn btn-s', onclick: () => openRecorrencia(st, r) }, 'Editar') : null,
           can('editar') && r.ativa ? el('button', { class: 'btn btn-d', onclick: () => UI.pedirMotivo({ titulo: 'Encerrar recorrência' }, (motivo) => {
+            const m = DB.meta ? DB.meta() : {};
             DB.set(s => {
               const x = s.recorrencias.find(i => i.id === r.id);
-              if (x) { x.ativa = false; x.encerradoEm = new Date().toISOString(); x.motivoEncerramento = motivo; }
+              if (x) {
+                x.ativa = false;
+                x.encerradoEm = new Date().toISOString();
+                x.encerradoPor = m.perfilAtivo || '—';
+                x.encerradoEmail = m.userEmail || null;
+                x.motivoEncerramento = motivo;
+              }
             });
             UI.toast('Recorrência encerrada. Títulos já gerados foram preservados.', 'v');
           }) }, 'Encerrar') : null,
