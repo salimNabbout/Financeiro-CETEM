@@ -605,7 +605,12 @@ const Views = (() => {
         el('td', {}, badge(t.status, t.status === 'pago' ? 'v' : t.status === 'parcial' ? 'a' : atraso > 0 ? 'r' : 'g')),
         el('td', {}, atraso > 0 ? badge(atraso + 'd', 'r') : '—'),
         el('td', {}, el('div', { class: 'flex gap-1' }, [
-          can('baixar') ? el('button', { class: 'btn btn-s', onclick: () => openBaixaReceber(st, t) }, 'Baixar') : null,
+          can('baixar') && t.status !== 'pago' && t.status !== 'cancelado' ? el('button', { class: 'btn btn-s', onclick: () => openBaixaReceber(st, t) }, 'Baixar') : null,
+          // Reverter recebimento: visivel para titulos pago/parcial (e nao cancelados)
+          (t.status === 'pago' || t.status === 'parcial') && can('cancelar') ? el('button', { class: 'btn btn-d', title: 'Reverter recebimento (volta para aberto)', onclick: () => UI.pedirMotivo({ titulo: 'Reverter recebimento' }, (motivo) => {
+            const r = DB.reverterRecebimento(t.id, motivo);
+            if (!r.ok) UI.toast(r.erro, 'r'); else UI.toast('Recebimento revertido. Título voltou a Aberto.', 'v');
+          }) }, '↶ Reverter') : null,
           el('button', { class: 'btn btn-s', onclick: () => openPixQR(st, saldo, t.documento, cm[t.clienteId]?.nome) }, 'PIX'),
           el('button', { class: 'btn btn-s', onclick: () => openAnexos(st, t.id, 'receber') }, '📎' + (((st.anexos || {})[t.id] || []).length || '')),
           can('editar') ? el('button', { class: 'btn btn-s', onclick: () => openTituloReceber(st, t) }, 'Editar') : null,
@@ -613,7 +618,7 @@ const Views = (() => {
             const r = DB.cancelarTituloReceber(t.id, motivo);
             if (!r.ok) UI.toast(r.erro, 'r'); else UI.toast('Título cancelado.', 'v');
           }) }, 'Cancelar') : null
-        ]))
+        ].filter(Boolean)))
       ]));
     });
     tbl.appendChild(tbody);
@@ -955,6 +960,12 @@ const Views = (() => {
         el('td', {}, t.cancelado ? badge('cancelado', 'r') : t.pago ? badge('pago', 'v') : atraso ? badge('atrasado', 'r') : badge('pendente', 'a')),
         el('td', {}, el('div', { class: 'flex gap-1' }, [
           (t.pago || t.cancelado || !can('pagar')) ? null : el('button', { class: 'btn btn-p', onclick: () => openPagamento(st, t) }, 'Pagar'),
+          // Botao Reverter pagto: visivel apenas para titulos pagos (e nao cancelados).
+          // Volta o status para pendente e cancela logicamente o movimento de baixa.
+          t.pago && !t.cancelado && can('cancelar') ? el('button', { class: 'btn btn-d', title: 'Reverter pagamento (volta para pendente)', onclick: () => UI.pedirMotivo({ titulo: 'Reverter pagamento' }, (motivo) => {
+            const r = DB.reverterPagamento(t.id, motivo);
+            if (!r.ok) UI.toast(r.erro, 'r'); else UI.toast('Pagamento revertido. Título voltou a Pendente.', 'v');
+          }) }, '↶ Reverter') : null,
           el('button', { class: 'btn btn-s', onclick: () => openAnexos(st, t.id, 'pagar') }, '📎' + (((st.anexos || {})[t.id] || []).length || '')),
           t.cancelado ? null : el('button', { class: 'btn btn-s', onclick: () => openTituloPagar(st, t) }, 'Editar'),
           can('cancelar') && !t.pago && !t.cancelado ? el('button', { class: 'btn btn-d', onclick: () => UI.pedirMotivo({ titulo: 'Cancelar título a pagar' }, (motivo) => {

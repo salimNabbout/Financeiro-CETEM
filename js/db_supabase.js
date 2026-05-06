@@ -402,6 +402,54 @@ const DB = (() => {
       if (achou) auditAppend({ ts: new Date().toISOString(), perfil: meta.perfilAtivo, acao: 'cancelar-movimento', detalhe: `movId=${movId}; motivo=${m}` });
       return achou ? { ok: true } : { ok: false, erro: 'Movimento nao encontrado ou e fruto de baixa (requer estorno).' };
     },
+    // Reverte um pagamento: marca titulo como pendente (pago=false) e cancela
+    // logicamente o movimento gerado pela baixa. Append-only audit.
+    reverterPagamento: (tituloId, motivo) => {
+      const m = String(motivo || '').trim();
+      if (!m) return { ok: false, erro: 'Motivo da reversao e obrigatorio.' };
+      let achou = false, movsRevertidos = 0;
+      DB_internalSet(s => {
+        const t = s.titulosPagar.find(x => x.id === tituloId);
+        if (!t || !t.pago || t.cancelado) return;
+        t.pago = false;
+        t.dataPagamento = null;
+        t.reversoes = (t.reversoes || []).concat([{ ts: new Date().toISOString(), perfil: meta.perfilAtivo, motivo: m }]);
+        // Cancela movimentos vinculados (origem=baixa-pagar e tituloId)
+        (s.movimentos || []).forEach(mv => {
+          if (mv.origem === 'baixa-pagar' && mv.tituloId === tituloId && !mv.cancelado) {
+            mv.cancelado = true;
+            mv.cancelamento = { ts: new Date().toISOString(), perfil: meta.perfilAtivo, motivo: 'Reversao de pagamento: ' + m };
+            movsRevertidos++;
+          }
+        });
+        achou = true;
+      });
+      if (achou) auditAppend({ ts: new Date().toISOString(), perfil: meta.perfilAtivo, acao: 'reverter-pagamento', detalhe: `tituloId=${tituloId}; movsRevertidos=${movsRevertidos}; motivo=${m}` });
+      return achou ? { ok: true, movsRevertidos } : { ok: false, erro: 'Titulo nao encontrado, ja pendente ou cancelado.' };
+    },
+    // Reverte um recebimento (pago/parcial -> aberto) e cancela movimentos vinculados.
+    reverterRecebimento: (tituloId, motivo) => {
+      const m = String(motivo || '').trim();
+      if (!m) return { ok: false, erro: 'Motivo da reversao e obrigatorio.' };
+      let achou = false, movsRevertidos = 0;
+      DB_internalSet(s => {
+        const t = s.titulosReceber.find(x => x.id === tituloId);
+        if (!t || t.status === 'cancelado' || t.status === 'aberto') return;
+        t.valorRecebido = 0;
+        t.status = 'aberto';
+        t.reversoes = (t.reversoes || []).concat([{ ts: new Date().toISOString(), perfil: meta.perfilAtivo, motivo: m }]);
+        (s.movimentos || []).forEach(mv => {
+          if (mv.origem === 'baixa-receber' && mv.tituloId === tituloId && !mv.cancelado) {
+            mv.cancelado = true;
+            mv.cancelamento = { ts: new Date().toISOString(), perfil: meta.perfilAtivo, motivo: 'Reversao de recebimento: ' + m };
+            movsRevertidos++;
+          }
+        });
+        achou = true;
+      });
+      if (achou) auditAppend({ ts: new Date().toISOString(), perfil: meta.perfilAtivo, acao: 'reverter-recebimento', detalhe: `tituloId=${tituloId}; movsRevertidos=${movsRevertidos}; motivo=${m}` });
+      return achou ? { ok: true, movsRevertidos } : { ok: false, erro: 'Titulo nao encontrado, ja aberto ou cancelado.' };
+    },
 
     // ----- Multi-empresa -----
     listEmpresas: () => meta.empresas.slice(),
