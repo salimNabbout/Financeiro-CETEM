@@ -2128,7 +2128,11 @@ const Views = (() => {
 
   // ================= CALENDÁRIO =================
   let calMes = null;
+  let calDiaSel = null; // ISO 'YYYY-MM-DD' quando o usuario clica num dia. null = calendario mensal.
   function calendario(st) {
+    // Se o usuario clicou num dia, renderiza a tela de detalhe.
+    if (calDiaSel) { return calendarioDia(st, calDiaSel); }
+
     const v = document.getElementById('view'); v.innerHTML = '';
     const hoje = new Date();
     const ano = calMes ? calMes.ano : hoje.getFullYear();
@@ -2157,19 +2161,19 @@ const Views = (() => {
     ]);
     v.appendChild(nav);
 
-    // ----- Coleta itens por dia (com nomes de cliente/fornecedor) -----
-    const cm = clientesMap(st);
-    const fm = fornecedoresMap(st);
+    // ----- Coleta totais por dia (sem listar itens individuais) -----
     const pref = `${ano}-${String(mes).padStart(2, '0')}`;
-    const itensPorDia = {};
+    const totaisPorDia = {}; // iso -> { receber, pagar, qtdR, qtdP }
     let totalR = 0, totalP = 0;
     (st.titulosReceber || [])
       .filter(t => t.status !== 'pago' && t.status !== 'cancelado' && t.vencimento && t.vencimento.startsWith(pref))
       .forEach(t => {
         const valor = (+t.valor) - (+t.valorRecebido || 0);
         if (valor <= 0) return;
-        itensPorDia[t.vencimento] = itensPorDia[t.vencimento] || [];
-        itensPorDia[t.vencimento].push({ tipo: 'r', nome: cm[t.clienteId]?.nome || '—', valor });
+        const k = t.vencimento;
+        totaisPorDia[k] = totaisPorDia[k] || { receber: 0, pagar: 0, qtdR: 0, qtdP: 0 };
+        totaisPorDia[k].receber += valor;
+        totaisPorDia[k].qtdR += 1;
         totalR += valor;
       });
     (st.titulosPagar || [])
@@ -2177,13 +2181,15 @@ const Views = (() => {
       .forEach(t => {
         const valor = +t.valor;
         if (valor <= 0) return;
-        itensPorDia[t.vencimento] = itensPorDia[t.vencimento] || [];
-        itensPorDia[t.vencimento].push({ tipo: 'p', nome: fm[t.fornecedorId]?.nome || '—', valor });
+        const k = t.vencimento;
+        totaisPorDia[k] = totaisPorDia[k] || { receber: 0, pagar: 0, qtdR: 0, qtdP: 0 };
+        totaisPorDia[k].pagar += valor;
+        totaisPorDia[k].qtdP += 1;
         totalP += valor;
       });
 
     v.appendChild(el('div', { class: 'text-sm text-slate-600 mt-2' },
-      `A receber no mês: ${BRL(totalR)} · A pagar no mês: ${BRL(totalP)} · Líquido: ${BRL(totalR - totalP)}`));
+      `A receber no mês: ${BRL(totalR)} · A pagar no mês: ${BRL(totalP)} · Líquido: ${BRL(totalR - totalP)} · Clique em um dia para ver os títulos.`));
 
     const primeiro = new Date(ano, mes - 1, 1);
     const diasMes = new Date(ano, mes, 0).getDate();
@@ -2195,48 +2201,116 @@ const Views = (() => {
       nomesDias.map(n => el('div', { class: 'text-base font-bold text-slate-700 text-center' }, n)));
     grid.appendChild(header);
     const cells = el('div', { class: 'grid grid-cols-7 gap-2' });
-    for (let i = 0; i < offset; i++) cells.appendChild(el('div', { class: 'min-h-32' }, ''));
+    for (let i = 0; i < offset; i++) cells.appendChild(el('div', { class: 'min-h-24' }, ''));
     for (let d = 1; d <= diasMes; d++) {
       const iso = `${ano}-${String(mes).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
-      const itens = itensPorDia[iso] || [];
+      const tot = totaisPorDia[iso];
       const isHoje = iso === KPI.today();
+      const temItem = !!tot && (tot.receber > 0 || tot.pagar > 0);
       const borda = isHoje ? 'border-blue-500 border-2' : 'border-slate-200';
-
-      // Subtotais para o cabecalho da celula
-      const subR = itens.filter(i => i.tipo === 'r').reduce((s, i) => s + i.valor, 0);
-      const subP = itens.filter(i => i.tipo === 'p').reduce((s, i) => s + i.valor, 0);
-
-      const linhasItens = itens.map(i => el('div', {
-        class: (i.tipo === 'r' ? 'text-green-700' : 'text-red-700') + ' truncate text-xs leading-snug',
-        title: (i.tipo === 'r' ? '+ ' : '− ') + i.nome + ' · ' + BRL(i.valor)
-      }, (i.tipo === 'r' ? '+ ' : '− ') + i.nome + ' · ' + BRL(i.valor)));
-
-      const cell = el('div', { class: `min-h-32 border ${borda} rounded p-2 text-sm flex flex-col` }, [
-        el('div', { class: 'flex justify-between items-center mb-1' }, [
-          el('div', { class: 'font-bold text-base ' + (isHoje ? 'text-blue-600' : 'text-slate-800') }, String(d)),
-          el('div', { class: 'flex gap-1 text-xs' }, [
-            subR > 0 ? el('span', { class: 'text-green-700 font-semibold', title: 'Total a receber no dia' }, BRL(subR)) : null,
-            subP > 0 ? el('span', { class: 'text-red-700 font-semibold', title: 'Total a pagar no dia' }, BRL(subP)) : null
-          ].filter(Boolean))
-        ]),
-        itens.length
-          ? el('div', { class: 'space-y-0.5 overflow-y-auto', style: 'max-height:7rem;' }, linhasItens)
-          : null
-      ].filter(Boolean));
+      const cursor = temItem ? 'cursor-pointer hover:bg-slate-50' : '';
+      const cell = el('div', {
+        class: `min-h-24 border ${borda} rounded p-2 text-sm flex flex-col ${cursor}`,
+        title: temItem ? 'Clique para ver os títulos do dia' : '',
+        onclick: temItem ? () => { calDiaSel = iso; calendario(DB.get()); } : null
+      }, [
+        el('div', { class: 'font-bold text-base mb-1 ' + (isHoje ? 'text-blue-600' : 'text-slate-800') }, String(d)),
+        tot ? el('div', { class: 'space-y-0.5' }, [
+          tot.receber > 0 ? el('div', { class: 'text-green-700 font-bold truncate', title: tot.qtdR + ' título(s) a receber' }, '+ ' + BRL(tot.receber)) : null,
+          tot.pagar > 0 ? el('div', { class: 'text-red-700 font-bold truncate', title: tot.qtdP + ' título(s) a pagar' }, '− ' + BRL(tot.pagar)) : null
+        ].filter(Boolean)) : null
+      ]);
       cells.appendChild(cell);
     }
     grid.appendChild(cells);
     v.appendChild(grid);
 
-    // ----- Legenda discreta -----
     v.appendChild(el('div', { class: 'text-xs text-slate-500 mt-2 flex gap-4 flex-wrap' }, [
-      el('span', {}, [el('span', { class: 'inline-block w-3 h-3 align-middle rounded-sm mr-1', style: 'background:#16a34a' }), ' Receber (cliente · valor)']),
-      el('span', {}, [el('span', { class: 'inline-block w-3 h-3 align-middle rounded-sm mr-1', style: 'background:#dc2626' }), ' Pagar (fornecedor · valor)']),
-      el('span', {}, 'Hover sobre o nome trunca completo no tooltip.')
+      el('span', {}, [el('span', { class: 'inline-block w-3 h-3 align-middle rounded-sm mr-1', style: 'background:#16a34a' }), ' Receber']),
+      el('span', {}, [el('span', { class: 'inline-block w-3 h-3 align-middle rounded-sm mr-1', style: 'background:#dc2626' }), ' Pagar']),
+      el('span', {}, 'Clique em um dia para abrir o detalhamento.')
     ]));
   }
 
-  // ================= RECORRÊNCIAS =================
+  // ----- Tela de detalhe diario (planilha de titulos do dia) -----
+  function calendarioDia(st, iso) {
+    const v = document.getElementById('view'); v.innerHTML = '';
+    const cm = clientesMap(st);
+    const fm = fornecedoresMap(st);
+    const contasMap = Object.fromEntries((st.contas || []).map(c => [c.id, c.nome]));
+
+    const itensReceber = (st.titulosReceber || [])
+      .filter(t => t.status !== 'pago' && t.status !== 'cancelado' && t.vencimento === iso)
+      .map(t => ({
+        tipo: 'r',
+        contraparte: cm[t.clienteId]?.nome || '—',
+        documento: t.documento || '—',
+        categoria: t.categoria || '—',
+        contaId: t.contaId,
+        valor: (+t.valor) - (+t.valorRecebido || 0),
+        raw: t
+      }));
+    const itensPagar = (st.titulosPagar || [])
+      .filter(t => !t.pago && !t.cancelado && t.vencimento === iso)
+      .map(t => ({
+        tipo: 'p',
+        contraparte: fm[t.fornecedorId]?.nome || '—',
+        documento: t.documento || '—',
+        categoria: t.categoria || '—',
+        contaId: t.contaId,
+        valor: +t.valor,
+        raw: t
+      }));
+
+    const itens = [...itensReceber, ...itensPagar];
+    const totalR = itensReceber.reduce((s, i) => s + i.valor, 0);
+    const totalP = itensPagar.reduce((s, i) => s + i.valor, 0);
+    const dataBR = (function() { try { return new Date(iso + 'T12:00:00').toLocaleDateString('pt-BR', { weekday: 'long', day: '2-digit', month: 'long', year: 'numeric' }); } catch { return iso; } })();
+
+    // Cabecalho com botao Voltar
+    v.appendChild(el('div', { class: 'flex justify-between items-center flex-wrap gap-2' }, [
+      el('div', {}, [
+        el('button', { class: 'btn btn-s', onclick: () => { calDiaSel = null; calendario(DB.get()); } }, '◀ Voltar ao calendário'),
+        el('span', { class: 'ml-3 text-base font-semibold' }, 'Detalhamento de ' + dataBR)
+      ]),
+      el('div', { class: 'text-sm text-slate-600' }, `A receber: ${BRL(totalR)} · A pagar: ${BRL(totalP)} · Líquido: ${BRL(totalR - totalP)}`)
+    ]));
+
+    if (!itens.length) {
+      v.appendChild(el('div', { class: 'card p-6 text-center text-slate-500 mt-2' }, 'Nenhum título com vencimento neste dia.'));
+      return;
+    }
+
+    // Tabela tipo planilha
+    const tbl = el('table', {});
+    tbl.appendChild(el('thead', {}, el('tr', {}, [
+      'Tipo', 'Contraparte', 'Documento', 'Categoria', 'Conta corrente', 'Valor'
+    ].map(h => el('th', {}, h)))));
+    const tbody = el('tbody');
+    // Receber primeiro (verde), depois pagar (vermelho)
+    const ordenados = [...itensReceber.sort((a, b) => b.valor - a.valor), ...itensPagar.sort((a, b) => b.valor - a.valor)];
+    ordenados.forEach(i => {
+      const corLinha = i.tipo === 'r' ? 'text-green-700' : 'text-red-700';
+      const sinal = i.tipo === 'r' ? '+ ' : '− ';
+      tbody.appendChild(el('tr', {}, [
+        el('td', { class: corLinha + ' font-semibold' }, i.tipo === 'r' ? 'A receber' : 'A pagar'),
+        el('td', { class: corLinha }, sinal + i.contraparte),
+        el('td', {}, i.documento),
+        el('td', {}, i.categoria),
+        el('td', {}, contasMap[i.contaId] || '—'),
+        el('td', { class: corLinha + ' font-semibold text-right' }, BRL(i.valor))
+      ]));
+    });
+    // Linha de totais
+    tbody.appendChild(el('tr', { class: 'bg-slate-100 font-bold' }, [
+      el('td', { colspan: 5, class: 'text-right' }, 'Líquido do dia'),
+      el('td', { class: (totalR - totalP) >= 0 ? 'text-green-700 text-right' : 'text-red-700 text-right' }, BRL(totalR - totalP))
+    ]));
+    tbl.appendChild(tbody);
+    v.appendChild(el('div', { class: 'card p-0 overflow-hidden mt-2' }, tbl));
+  }
+
+    // ================= RECORRÊNCIAS =================
   function recorrencias(st) {
     const v = document.getElementById('view'); v.innerHTML = '';
     const fm = fornecedoresMap(st);
