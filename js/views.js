@@ -975,7 +975,9 @@ const Views = (() => {
           criadoEm: new Date().toISOString()
         };
         DB.set(s => { s.recorrencias = s.recorrencias || []; s.recorrencias.push(regra); });
-        UI.toast('Recorrência criada. Os títulos serão gerados automaticamente ao abrir Contas a pagar.', 'v');
+        // Materializa imediatamente: gera os titulos da nova regra ate hoje+60d
+        if (window.App && window.App.materializarRecorrencias) { window.App.materializarRecorrencias(); }
+        UI.toast('Recorrência criada e títulos gerados (próximos 60 dias).', 'v');
         return;
       }
 
@@ -2305,6 +2307,8 @@ const Views = (() => {
         if (r) s.recorrencias = s.recorrencias.map(x => x.id === r.id ? payload : x);
         else s.recorrencias.push(payload);
       });
+      // Materializa imediatamente apos salvar (gera/atualiza titulos da regra)
+      if (window.App && window.App.materializarRecorrencias) { window.App.materializarRecorrencias(); }
       UI.toast(r ? 'Recorrência atualizada.' : 'Recorrência criada.', 'v');
     });
   }

@@ -267,7 +267,9 @@
   });
 
   // Motor de recorrências: ao abrir o app, materializa lançamentos cujo "proxima" <= hoje
-  (function recor() {
+  // Funcao reutilizavel: gera titulos das recorrencias ate hoje+60d.
+  // Chamada no boot E apos criar/editar uma recorrencia (para o usuario ver os titulos imediatamente).
+  function materializarRecorrencias() {
     const hoje = KPI.today();
     // Horizonte de geracao: ate 60 dias a frente. Usuarios veem futuros vencimentos sem precisar esperar a data passar.
     const horizonteDt = new Date(hoje); horizonteDt.setDate(horizonteDt.getDate() + 60);
@@ -364,7 +366,12 @@
       });
     });
     if (gerou) DB.log('recorrencias', `${gerou} lançamentos gerados`);
-  })();
+    return gerou;
+  }
+  window.App = window.App || {};
+  window.App.materializarRecorrencias = materializarRecorrencias;
+  // Roda no boot
+  materializarRecorrencias();
 
   // Onboarding desativado: era um pop-up automatico no boot.
   // Usuario que precisar pode acessar manualmente via Configuracoes.
