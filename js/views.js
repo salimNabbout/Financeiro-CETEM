@@ -195,6 +195,80 @@ const Views = (() => {
 
   // ================= FLUXO DE CAIXA =================
   let fxFiltro = { conta: '', tag: '', texto: '' };
+  // Modal de drilldown: lista todos os lancamentos com data == iso (movimentos
+  // realizados/previstos + titulos a receber abertos + titulos a pagar pendentes)
+  function abrirDrillFluxoDia(st, iso) {
+    const cm = clientesMap(st);
+    const fm = fornecedoresMap(st);
+    const linhas = [];
+    (st.movimentos || []).filter(m => m.data === iso && !m.cancelado).forEach(m => {
+      linhas.push({ tipo: m.tipo, origem: 'movimento', desc: m.descricao || '—', categoria: m.categoria || '—', valor: +m.valor, status: m.status || 'previsto' });
+    });
+    (st.titulosReceber || []).filter(t => t.vencimento === iso && t.status !== 'pago' && t.status !== 'cancelado').forEach(t => {
+      const valor = (+t.valor) - (+t.valorRecebido || 0);
+      if (valor <= 0) return;
+      linhas.push({ tipo: 'entrada', origem: 'titulo-receber', desc: cm[t.clienteId]?.nome || '—', categoria: t.categoria || '—', valor, status: t.status, doc: t.documento });
+    });
+    (st.titulosPagar || []).filter(t => t.vencimento === iso && !t.pago && !t.cancelado).forEach(t => {
+      linhas.push({ tipo: 'saida', origem: 'titulo-pagar', desc: fm[t.fornecedorId]?.nome || '—', categoria: t.categoria || '—', valor: +t.valor, status: t.pago ? 'pago' : 'pendente', doc: t.documento });
+    });
+    const totalE = linhas.filter(l => l.tipo === 'entrada').reduce((s, l) => s + l.valor, 0);
+    const totalS = linhas.filter(l => l.tipo === 'saida').reduce((s, l) => s + l.valor, 0);
+
+    const body = el('div');
+    body.appendChild(el('div', { class: 'text-sm text-slate-600 mb-3' },
+      `Entradas: ${BRL(totalE)} · Saídas: ${BRL(totalS)} · Líquido: ${BRL(totalE - totalS)}`));
+    if (!linhas.length) {
+      body.appendChild(el('div', { class: 'text-center py-6 text-slate-500' }, 'Sem lançamentos neste dia.'));
+    } else {
+      const tbl = el('table', {});
+      tbl.appendChild(el('thead', {}, el('tr', {}, ['Tipo', 'Origem', 'Descrição/Contraparte', 'Documento', 'Categoria', 'Status', 'Valor'].map(h => el('th', {}, h)))));
+      const tbody = el('tbody');
+      [...linhas.filter(l => l.tipo === 'entrada'), ...linhas.filter(l => l.tipo === 'saida')].forEach(l => {
+        const cor = l.tipo === 'entrada' ? 'text-green-700' : 'text-red-700';
+        const sinal = l.tipo === 'entrada' ? '+ ' : '− ';
+        tbody.appendChild(el('tr', {}, [
+          el('td', { class: cor + ' font-semibold' }, l.tipo === 'entrada' ? 'Entrada' : 'Saída'),
+          el('td', {}, ({ movimento: 'Movimento', 'titulo-receber': 'Título a receber', 'titulo-pagar': 'Título a pagar' })[l.origem] || l.origem),
+          el('td', { class: cor }, sinal + l.desc),
+          el('td', {}, l.doc || '—'),
+          el('td', {}, l.categoria),
+          el('td', {}, badge(l.status, l.status === 'realizado' || l.status === 'pago' ? 'v' : 'a')),
+          el('td', { class: cor + ' font-semibold text-right' }, BRL(l.valor))
+        ]));
+      });
+      tbl.appendChild(tbody);
+      body.appendChild(el('div', { class: 'card p-0 overflow-hidden' }, tbl));
+    }
+    const dataBR = (function() { try { return new Date(iso + 'T12:00:00').toLocaleDateString('pt-BR', { weekday: 'long', day: '2-digit', month: 'long', year: 'numeric' }); } catch { return iso; } })();
+    UI.modal('Detalhamento do dia · ' + dataBR, body, () => true);
+  }
+
+  // Calcula comparativo previsto vs realizado para um determinado mes (ano-mes).
+  // 'Previsto': total de titulos com vencimento no mes (a receber + a pagar) — ignora se pagos depois ou nao.
+  // 'Realizado': dos titulos previstos para o mes, quanto efetivamente foi recebido/pago.
+  function comparativoMes(st, ano, mes) {
+    const pref = `${ano}-${String(mes).padStart(2, '0')}`;
+    let prevR = 0, realR = 0, atrasoR = 0;
+    let prevP = 0, realP = 0, atrasoP = 0;
+    (st.titulosReceber || []).filter(t => t.status !== 'cancelado' && t.vencimento && t.vencimento.startsWith(pref))
+      .forEach(t => {
+        const total = +t.valor;
+        const recebido = +t.valorRecebido || 0;
+        prevR += total;
+        realR += recebido;
+        if (t.status !== 'pago') atrasoR += (total - recebido);
+      });
+    (st.titulosPagar || []).filter(t => !t.cancelado && t.vencimento && t.vencimento.startsWith(pref))
+      .forEach(t => {
+        const total = +t.valor;
+        prevP += total;
+        if (t.pago) realP += total;
+        else atrasoP += total;
+      });
+    return { prevR, realR, atrasoR, prevP, realP, atrasoP };
+  }
+
   function fluxoCaixa(st) {
     const v = document.getElementById('view'); v.innerHTML = '';
     const saldoAtual = KPI.saldoRealizado(st);
@@ -294,6 +368,18 @@ const Views = (() => {
             scales: {
               x: { ticks: { maxTicksLimit: 8 } },
               y: { ticks: { callback: v => BRL(v) } }
+            },
+            onClick: (event, elements) => {
+              if (!elements || !elements.length) return;
+              const idx = elements[0].index;
+              const ponto = proj60[idx];
+              if (!ponto) return;
+              abrirDrillFluxoDia(DB.get(), ponto.data);
+            },
+            onHover: (event, elements) => {
+              if (event && event.native && event.native.target) {
+                event.native.target.style.cursor = elements && elements.length ? 'pointer' : 'default';
+              }
             }
           }
         });
@@ -310,6 +396,46 @@ const Views = (() => {
     selConta.onchange = aplicar; selTag.onchange = aplicar; inpTexto.onchange = aplicar;
     v.appendChild(el('div', { class: 'card grid grid-cols-1 md:grid-cols-3 gap-3' }, [
       field('Conta', selConta), field('Tag', selTag), field('Busca', inpTexto)
+    ]));
+
+    // ---- Card: previsto vs realizado (mes anterior + mes atual) ----
+    const hojeDt = new Date();
+    const mesAtual = hojeDt.getMonth() + 1;
+    const anoAtual = hojeDt.getFullYear();
+    const dtAnterior = new Date(anoAtual, mesAtual - 2, 1);
+    const mesAnt = dtAnterior.getMonth() + 1;
+    const anoAnt = dtAnterior.getFullYear();
+    const compAtual = comparativoMes(st, anoAtual, mesAtual);
+    const compAnt = comparativoMes(st, anoAnt, mesAnt);
+    const nomesMeses = ['jan','fev','mar','abr','mai','jun','jul','ago','set','out','nov','dez'];
+    const rotuloAtual = `${nomesMeses[mesAtual - 1]}/${String(anoAtual).slice(2)}`;
+    const rotuloAnt = `${nomesMeses[mesAnt - 1]}/${String(anoAnt).slice(2)}`;
+    const pctR = (a, b) => b > 0 ? Math.min(999, Math.round(a / b * 100)) : 0;
+    function compCol(rotulo, c) {
+      const taxaR = pctR(c.realR, c.prevR);
+      const taxaP = pctR(c.realP, c.prevP);
+      return el('div', { class: 'card p-3' }, [
+        el('div', { class: 'text-xs uppercase font-bold text-slate-500 mb-2' }, rotulo),
+        el('div', { class: 'text-sm mb-1' }, [
+          el('span', { class: 'text-slate-600' }, 'A receber: '),
+          el('span', { class: 'font-semibold text-green-700' }, BRL(c.realR)),
+          el('span', { class: 'text-slate-500' }, ' / ' + BRL(c.prevR) + ` (${taxaR}%)`)
+        ]),
+        c.atrasoR > 0 ? el('div', { class: 'text-xs text-orange-700 mb-1' }, '↳ Em atraso: ' + BRL(c.atrasoR)) : null,
+        el('div', { class: 'text-sm mb-1' }, [
+          el('span', { class: 'text-slate-600' }, 'A pagar: '),
+          el('span', { class: 'font-semibold text-red-700' }, BRL(c.realP)),
+          el('span', { class: 'text-slate-500' }, ' / ' + BRL(c.prevP) + ` (${taxaP}%)`)
+        ]),
+        c.atrasoP > 0 ? el('div', { class: 'text-xs text-orange-700' }, '↳ Em atraso: ' + BRL(c.atrasoP)) : null
+      ].filter(Boolean));
+    }
+    v.appendChild(el('div', { class: 'mt-3' }, [
+      el('h3', { class: 'font-semibold mb-2 text-slate-700' }, 'Previsto vs Realizado'),
+      el('div', { class: 'grid grid-cols-1 md:grid-cols-2 gap-3' }, [
+        compCol(`Mês atual (${rotuloAtual})`, compAtual),
+        compCol(`Mês anterior (${rotuloAnt})`, compAnt)
+      ])
     ]));
 
     let movs = [...st.movimentos];
@@ -727,7 +853,7 @@ const Views = (() => {
         const tt = s.titulosReceber.find(x => x.id === t.id);
         tt.valorRecebido = (+tt.valorRecebido || 0) + v;
         tt.status = tt.valorRecebido >= tt.valor ? 'pago' : 'parcial';
-        s.movimentos.push({ id: DB.id(), data: inp.data.value, descricao: `Recebimento ${tt.documento || ''}`.trim(), categoria: 'Vendas', tipo: 'entrada', natureza: 'op', status: 'realizado', valor: v, origem: 'baixa-receber' });
+        s.movimentos.push({ id: DB.id(), data: inp.data.value, descricao: `Recebimento ${tt.documento || ''}`.trim(), categoria: tt.categoria || 'Vendas', tipo: 'entrada', natureza: 'op', status: 'realizado', valor: v, origem: 'baixa-receber', recorrenciaId: tt.recorrenciaId || null, tituloId: tt.id });
       });
       DB.log('baixa-receber', `${BRL(v)} do título ${t.documento || t.id}`);
       const c = clientesMap(DB.get())[t.clienteId];
@@ -1106,7 +1232,7 @@ const Views = (() => {
       DB.set(s => {
         const tt = s.titulosPagar.find(x => x.id === t.id);
         tt.pago = true; tt.dataPagamento = inp.data.value;
-        s.movimentos.push({ id: DB.id(), data: inp.data.value, descricao: `Pagamento ${tt.documento || tt.categoria}`, categoria: tt.categoria, tipo: 'saida', natureza: 'op', status: 'realizado', valor: tt.valor, origem: 'baixa-pagar' });
+        s.movimentos.push({ id: DB.id(), data: inp.data.value, descricao: `Pagamento ${tt.documento || tt.categoria}`, categoria: tt.categoria, tipo: 'saida', natureza: 'op', status: 'realizado', valor: tt.valor, origem: 'baixa-pagar', recorrenciaId: tt.recorrenciaId || null, tituloId: tt.id });
       });
       DB.log('pagamento', `${BRL(t.valor)} para ${t.documento || t.categoria}`);
       const f = fornecedoresMap(DB.get())[t.fornecedorId];
