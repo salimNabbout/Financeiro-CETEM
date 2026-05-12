@@ -23,12 +23,17 @@ const Auth = (() => {
       password: String(password || '')
     });
     if (error) return { ok: false, erro: traduzErro(error) };
+    // Define o e-mail do usuario global ANTES de logar (DB.log pode rodar antes do onAuthStateChange propagar)
+    window.CURRENT_USER_EMAIL = (data.session && data.session.user && data.session.user.email) || email;
+    try { if (window.DB && DB.log) DB.log('login', 'login com email/senha'); } catch (e) {}
     return { ok: true, session: data.session };
   }
 
   async function signOut() {
+    try { if (window.DB && DB.log) DB.log('logout', 'logout solicitado pelo usuario'); } catch (e) {}
     const { error } = await sb.auth.signOut();
     if (error) console.error('[Auth] signOut:', error);
+    window.CURRENT_USER_EMAIL = null;
     listeners.forEach(fn => { try { fn(null); } catch {} });
   }
 
