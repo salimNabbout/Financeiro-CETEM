@@ -7,5 +7,6 @@ OPERACAO.md
 DEPLOY_E_USUARIOS.md
 *.truncado-*
 *.backup
+*.restored
 .DS_Store
 Thumbs.db

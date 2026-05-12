@@ -367,7 +367,9 @@ const DB = (() => {
     },
     subscribe: (fn) => { listeners.add(fn); return () => listeners.delete(fn); },
     log: (acao, detalhe) => {
-      const ev = { ts: new Date().toISOString(), perfil: meta.perfilAtivo, email: meta.userEmail, acao, detalhe };
+      // Email do responsavel: prioriza window.CURRENT_USER_EMAIL (setado em signIn antes do onAuthStateChange propagar);
+      // cai para meta.userEmail (preenchido pelo listener de auth) quando o global nao estiver disponivel.
+      const ev = { ts: new Date().toISOString(), perfil: meta.perfilAtivo, email: (typeof window !== 'undefined' && window.CURRENT_USER_EMAIL) || meta.userEmail, acao, detalhe };
       auditAppend(ev);
       save();
     },

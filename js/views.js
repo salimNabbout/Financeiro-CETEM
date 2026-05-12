@@ -659,6 +659,7 @@ const Views = (() => {
         if (isEdit) s.movimentos = s.movimentos.map(x => x.id === m.id ? payload : x);
         else s.movimentos.push(payload);
       });
+      try { if (DB.log) DB.log(isEdit ? 'lancamento-editado' : 'lancamento-criado', `${payload.descricao || ''} - ${BRL(payload.valor)} (${payload.tipo})`); } catch (e) {}
     });
   }
 
@@ -872,6 +873,7 @@ const Views = (() => {
         tags: String(inp.tags.value || '').trim()
       };
       DB.set(s => { if (c) s.clientes = s.clientes.map(x => x.id === c.id ? payload : x); else s.clientes.push(payload); });
+      try { if (DB.log) DB.log(c ? 'cliente-editado' : 'cliente-criado', `${payload.nome}${payload.documento ? ' - ' + payload.documento : ''}`); } catch (e) {}
       UI.toast(c ? 'Cliente atualizado.' : 'Cliente cadastrado.', 'v');
       if (typeof opts.onSaved === 'function') { try { opts.onSaved(payload); } catch (e) { console.error(e); } }
     });
@@ -963,6 +965,7 @@ const Views = (() => {
         observacao: inp.observacao.value
       };
       DB.set(s => { if (t) s.titulosReceber = s.titulosReceber.map(x => x.id === t.id ? payload : x); else s.titulosReceber.push(payload); });
+      try { if (DB.log) DB.log(t ? 'titulo-receber-editado' : 'titulo-receber-criado', `${payload.documento || payload.id} - ${BRL(payload.valor)} venc ${fmtDate(payload.vencimento)}`); } catch (e) {}
       UI.toast(t ? 'Título atualizado.' : 'Título cadastrado.', 'v');
     });
   }
@@ -1213,6 +1216,7 @@ const Views = (() => {
         tags: String(inp.tags.value || '').trim()
       };
       DB.set(s => { if (f) s.fornecedores = s.fornecedores.map(x => x.id === f.id ? payload : x); else s.fornecedores.push(payload); });
+      try { if (DB.log) DB.log(f ? 'fornecedor-editado' : 'fornecedor-criado', `${payload.nome}${payload.documento ? ' - ' + payload.documento : ''}`); } catch (e) {}
       UI.toast(f ? 'Fornecedor atualizado.' : 'Fornecedor cadastrado.', 'v');
       if (typeof opts.onSaved === 'function') { try { opts.onSaved(payload); } catch (e) { console.error(e); } }
     });
@@ -1330,6 +1334,7 @@ const Views = (() => {
           criadoEm: new Date().toISOString()
         };
         DB.set(s => { s.recorrencias = s.recorrencias || []; s.recorrencias.push(regra); });
+        try { if (DB.log) DB.log('recorrencia-criada', `${regra.descricao} - ${BRL(regra.valor)} (mensal a partir de ${fmtDate(regra.proxima)})`); } catch (e) {}
         // Materializa imediatamente: gera os titulos da nova regra ate hoje+60d
         if (window.App && window.App.materializarRecorrencias) { window.App.materializarRecorrencias(); }
         UI.toast('Recorrência criada e títulos gerados (próximos 60 dias).', 'v');
@@ -1355,6 +1360,7 @@ const Views = (() => {
         recorrenciaId: t?.recorrenciaId || null
       };
       DB.set(s => { if (t) s.titulosPagar = s.titulosPagar.map(x => x.id === t.id ? payload : x); else s.titulosPagar.push(payload); });
+      try { if (DB.log) DB.log(t ? 'titulo-pagar-editado' : 'titulo-pagar-criado', `${payload.documento || payload.id} - ${BRL(payload.valor)} venc ${fmtDate(payload.vencimento)}`); } catch (e) {}
       UI.toast(t ? 'Título atualizado.' : 'Título cadastrado.', 'v');
     });
   }
@@ -3141,6 +3147,7 @@ const Views = (() => {
         conta: isCaixa ? '' : inp.conta.value.trim()
       };
       DB.set(s => { if (c) s.contas = s.contas.map(x => x.id === c.id ? payload : x); else s.contas.push(payload); });
+      try { if (DB.log) DB.log(c ? 'conta-editada' : 'conta-criada', `${payload.nome} (${payload.tipo})`); } catch (e) {}
     });
   }
 
