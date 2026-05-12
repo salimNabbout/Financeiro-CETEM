@@ -12,7 +12,7 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
-  <link rel="stylesheet" href="css/styles.css?v=202605121332" />
+  <link rel="stylesheet" href="css/styles.css?v=202605121709" />
 </head>
 <body class="bg-slate-50 text-slate-800">
   <div class="flex min-h-screen">
@@ -75,18 +75,18 @@
 
   <!-- Backend de dados: Supabase (provisorio). Para reverter ao localStorage,
        troque o bloco abaixo por: <script src="js/db.js"></script> -->
-  <script src="js/supabase_config.js?v=202605121332"></script>
-  <script src="js/supabase_client.js?v=202605121332"></script>
-  <script src="js/auth.js?v=202605121332"></script>
-  <script src="js/db_supabase.js?v=202605121332"></script>
-  <script src="js/kpis.js?v=202605121332"></script>
-  <script src="js/ui.js?v=202605121332"></script>
-  <script src="js/reports.js?v=202605121332"></script>
-  <script src="js/validators.js?v=202605121332"></script>
-  <script src="js/ofx.js?v=202605121332"></script>
-  <script src="js/impostos.js?v=202605121332"></script>
-  <script src="js/pix.js?v=202605121332"></script>
-  <script src="js/views.js?v=202605121332"></script>
+  <script src="js/supabase_config.js?v=202605121709"></script>
+  <script src="js/supabase_client.js?v=202605121709"></script>
+  <script src="js/auth.js?v=202605121709"></script>
+  <script src="js/db_supabase.js?v=202605121709"></script>
+  <script src="js/kpis.js?v=202605121709"></script>
+  <script src="js/ui.js?v=202605121709"></script>
+  <script src="js/reports.js?v=202605121709"></script>
+  <script src="js/validators.js?v=202605121709"></script>
+  <script src="js/ofx.js?v=202605121709"></script>
+  <script src="js/impostos.js?v=202605121709"></script>
+  <script src="js/pix.js?v=202605121709"></script>
+  <script src="js/views.js?v=202605121709"></script>
   <!-- Bootstrap: 1) checa sessao; 2) se nao logado, mostra login; 3) aguarda DB.ready; 4) carrega app.js -->
   <script>
     (async () => {
@@ -145,7 +145,7 @@
 
       // 4) Carrega app.js dinamicamente - so agora que DB esta pronto
       const s = document.createElement('script');
-      s.src = 'js/app.js?v=202605121332';
+      s.src = 'js/app.js?v=202605121709';
       document.body.appendChild(s);
     })();
   </script>

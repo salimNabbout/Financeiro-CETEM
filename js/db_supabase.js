@@ -199,6 +199,46 @@ const DB = (() => {
         state = mergeState(empty(), row.state || {});
       }
 
+      // Mescla eventos de auditoria do localStorage no state.auditoria.
+      // Cobre o caso onde DB.log foi chamado antes do bootstrap completar
+      // (ex: 'login' em signIn, quando _dbReady ainda e false) ou cujo save()
+      // foi bloqueado/interrompido pelo location.reload (ex: 'login', 'logout').
+      // Tambem migra eventos da chave 'default' (usada quando empresaAtivaId
+      // ainda nao estava setado) para a chave da empresa correta.
+      try {
+        const keysToCheck = ['default', meta.empresaAtivaId].filter(Boolean);
+        const localEvents = [];
+        const seenTs = new Set();
+        for (const k of keysToCheck) {
+          try {
+            const arr = JSON.parse(localStorage.getItem(AUDIT_PREFIX + k) || '[]');
+            for (const ev of arr) {
+              if (ev && ev.ts && !seenTs.has(ev.ts)) { seenTs.add(ev.ts); localEvents.push(ev); }
+            }
+          } catch {}
+        }
+        const existingTs = new Set((state.auditoria || []).map(e => e && e.ts));
+        const novos = localEvents.filter(e => !existingTs.has(e.ts));
+        if (novos.length) {
+          state.auditoria = [...novos, ...(state.auditoria || [])];
+          state.auditoria.sort((a, b) => ((b && b.ts) || '').localeCompare((a && a.ts) || ''));
+          state.auditoria = state.auditoria.slice(0, 500);
+          // Consolida tudo na chave da empresa ativa e remove a 'default'
+          if (meta.empresaAtivaId) {
+            try {
+              localStorage.setItem(AUDIT_PREFIX + meta.empresaAtivaId, JSON.stringify(state.auditoria));
+              if (keysToCheck.includes('default')) localStorage.removeItem(AUDIT_PREFIX + 'default');
+            } catch {}
+          }
+          console.log('[DB Supabase] Auditoria: mesclados', novos.length, 'evento(s) do localStorage.');
+          // Agenda save para persistir os eventos no Supabase (saveNow vai rodar
+          // apos _dbReady=true, entao nao sera bloqueado pelo guard de bootstrap).
+          scheduleSave();
+        }
+      } catch (e) {
+        console.warn('[DB Supabase] Falha ao mesclar auditoria local:', e);
+      }
+
       _dbReady = true;
       console.log('[DB Supabase] Pronto. Empresa ativa:', meta.empresaAtivaId, '| Save habilitado.');
       resolveReady(state);
