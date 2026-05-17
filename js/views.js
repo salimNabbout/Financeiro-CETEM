@@ -3092,7 +3092,7 @@ const Views = (() => {
         el('td', {}, c.ativa !== false ? badge('ativa', 'v') : badge('inativa', 'g')),
         el('td', {}, el('div', { class: 'flex gap-1' }, [
           can('editar') ? el('button', { class: 'btn btn-s', onclick: () => openConta(st, c) }, 'Editar') : null,
-          (can('editar') && c.id !== 'principal') ? el('button', { class: 'btn btn-d', onclick: () => confirmar('Excluir conta? Movimentos existentes mantêm o vínculo.', () => DB.set(s => { s.contas = s.contas.filter(x => x.id !== c.id); }); DB.log('conta-excluida', c.nome + ' (' + c.tipo + ')')) }, '×') : null
+          (can('editar') && c.id !== 'principal') ? el('button', { class: 'btn btn-d', onclick: () => confirmar('Excluir conta? Movimentos existentes mantêm o vínculo.', () => { DB.set(s => { s.contas = s.contas.filter(x => x.id !== c.id); }); DB.log('conta-excluida', c.nome + ' (' + c.tipo + ')'); }) }, '×') : null
         ].filter(Boolean)))
       ]));
     });
