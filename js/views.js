@@ -1440,7 +1440,7 @@ const Views = (() => {
         el('td', {}, BRL(rec)),
         el('td', {}, el('div', { class: 'flex gap-1' }, [
           el('button', { class: 'btn btn-s', onclick: () => openProduto(st, p) }, 'Editar'),
-          el('button', { class: 'btn btn-d', onclick: () => confirmar('Excluir?', () => DB.set(s => { s.produtos = s.produtos.filter(x => x.id !== p.id); })) }, '×')
+          el('button', { class: 'btn btn-d', onclick: () => confirmar('Excluir?', () => { DB.set(s => { s.produtos = s.produtos.filter(x => x.id !== p.id); }); DB.log('produto-excluido', p.nome + (p.preco ? ' - ' + BRL(p.preco) : '')); }) }, '×')
         ]))
       ]));
     });
@@ -2939,7 +2939,8 @@ const Views = (() => {
                 x.motivoEncerramento = motivo;
               }
             });
-            UI.toast('Recorrência encerrada. Títulos já gerados foram preservados.', 'v');
+            DB.log('recorrencia-encerrada', r.descricao + ' - ' + BRL(r.valor));
+              UI.toast('Recorrência encerrada. Títulos já gerados foram preservados.', 'v');
           }) }, 'Encerrar') : null,
           // Exclusao fisica da regra. Titulos ja gerados em Contas a Pagar/Receber sao preservados.
           can('editar') ? el('button', {
@@ -2952,6 +2953,7 @@ const Views = (() => {
                 : 'Excluir esta recorrência?\n\nNenhum título foi gerado ainda por esta regra. Esta ação remove a regra permanentemente.';
               UI.confirmar(aviso, () => {
                 DB.set(s => { s.recorrencias = (s.recorrencias || []).filter(i => i.id !== r.id); });
+                DB.log('recorrencia-excluida', r.descricao + ' - ' + BRL(r.valor));
                 UI.toast('Recorrência excluída.', 'v');
               });
             }
@@ -3090,7 +3092,7 @@ const Views = (() => {
         el('td', {}, c.ativa !== false ? badge('ativa', 'v') : badge('inativa', 'g')),
         el('td', {}, el('div', { class: 'flex gap-1' }, [
           can('editar') ? el('button', { class: 'btn btn-s', onclick: () => openConta(st, c) }, 'Editar') : null,
-          (can('editar') && c.id !== 'principal') ? el('button', { class: 'btn btn-d', onclick: () => confirmar('Excluir conta? Movimentos existentes mantêm o vínculo.', () => DB.set(s => { s.contas = s.contas.filter(x => x.id !== c.id); })) }, '×') : null
+          (can('editar') && c.id !== 'principal') ? el('button', { class: 'btn btn-d', onclick: () => confirmar('Excluir conta? Movimentos existentes mantêm o vínculo.', () => DB.set(s => { s.contas = s.contas.filter(x => x.id !== c.id); }); DB.log('conta-excluida', c.nome + ' (' + c.tipo + ')')) }, '×') : null
         ].filter(Boolean)))
       ]));
     });
@@ -4155,6 +4157,7 @@ const Views = (() => {
             el('a', { class: 'btn btn-s', href: a.conteudo, download: a.nome, target: '_blank' }, 'Abrir'),
             can('editar') ? el('button', { class: 'btn btn-d', onclick: () => {
               DB.set(s => { s.anexos[tituloId] = (s.anexos[tituloId] || []).filter(x => x.id !== a.id); });
+              DB.log('anexo-excluido', a.nome + ' (título ' + tituloId + ')');
               render();
             } }, '×') : null
           ].filter(Boolean))
@@ -4664,6 +4667,7 @@ const Views = (() => {
                 if (isCli) s.clientes = s.clientes.filter(i => i.id !== x.id);
                 else s.fornecedores = s.fornecedores.filter(i => i.id !== x.id);
               });
+              DB.log(isCli ? 'cliente-excluido' : 'fornecedor-excluido', x.nome + (x.documento ? ' - ' + x.documento : ''));
               UI.toast((isCli ? 'Cliente' : 'Fornecedor') + ' excluído.', 'v');
               _renderCad(tipo, DB.get());
             } }, '×') : null
